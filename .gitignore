@@ -1,0 +1,15 @@
+# Modelos treinados (ficheiros grandes)
+*.pth
+*.pt
+*.h5
+*.pkl
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+
+# Ambientes virtuais
+venv/
+.env/
