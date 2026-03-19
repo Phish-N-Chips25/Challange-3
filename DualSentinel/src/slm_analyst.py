@@ -146,15 +146,13 @@ class SLMAnalyst:
                             "content": f"Analyse this log window:\n\n{pack}",
                         },
                     ],
-                    options={"temperature": 0.1, "num_predict": 512},
+                    format="json",
+                    options={"temperature": 0.1, "num_predict": 1024},
                 )
 
                 raw = response.message.content.strip()
-                # Limpar possíveis markdown fences
-                if raw.startswith("```"):
-                    raw = raw.split("```")[1]
-                    if raw.startswith("json"):
-                        raw = raw[4:]
+                if not raw:
+                    raise json.JSONDecodeError("Empty response from model", "", 0)
 
                 parsed = json.loads(raw)
                 result.pre_score = int(parsed.get("pre_score", 0))
@@ -167,6 +165,7 @@ class SLMAnalyst:
 
             except json.JSONDecodeError as e:
                 logger.warning(f"JSON parse error on attempt {attempt + 1}: {e}")
+                logger.debug(f"Raw SLM response was: {raw!r}")
                 if attempt == self.max_retries - 1:
                     result.error = f"JSON parse failed: {e}"
                     # Fallback: treat as needing deep analysis so the judge still runs

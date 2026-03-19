@@ -21,7 +21,7 @@ import typer
 logger = logging.getLogger(__name__)
 
 # Sysmon EventIDs relevantes para deteção de anomalias
-RELEVANT_EVENT_IDS = {1, 3, 5, 6, 7, 8, 10, 11, 13, 16, 17, 18, 22, 23, 25}
+RELEVANT_EVENT_IDS = {1, 3, 5, 6, 7, 8, 10, 11, 12, 13, 15, 16, 17, 18, 22, 23, 25}
 
 # Processos considerados suspeitos (baseline)
 SUSPICIOUS_PROCESSES = {
@@ -123,10 +123,13 @@ def parse_csv(path: Path, dataset: str = "lmd") -> pd.DataFrame:
     df = pd.read_csv(path, low_memory=False, on_bad_lines="warn")
     df.columns = df.columns.str.lower().str.strip()
 
-    # Mapeamentos de nomes de colunas por dataset
+    # Mapeamentos de nomes de colunas por dataset.
+    # For lmd, `utctime` is preferred but some exports have it truncated;
+    # `systemtime` is the fallback full timestamp column.
     column_maps = {
         "lmd": {
             "utctime": "timestamp",
+            "systemtime": "_systemtime_fallback",
             "eventid": "event_id",
             "image": "process_name",
             "processid": "process_id",
@@ -174,7 +177,18 @@ def parse_csv(path: Path, dataset: str = "lmd") -> pd.DataFrame:
         if col not in df.columns:
             df[col] = ""
 
-    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
+    df["timestamp"] = pd.to_datetime(df["timestamp"], format="mixed", errors="coerce", utc=True)
+
+    # If utctime was corrupt (all NaT), fall back to the systemtime column
+    if df["timestamp"].isna().all() and "_systemtime_fallback" in df.columns:
+        logger.warning("utctime column unusable; falling back to systemtime for timestamps")
+        df["timestamp"] = pd.to_datetime(
+            df["_systemtime_fallback"], format="mixed", errors="coerce", utc=True
+        )
+
+    # Drop the temporary fallback column if present
+    df = df.drop(columns=["_systemtime_fallback"], errors="ignore")
+
     df = df.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
     df["event_id"] = pd.to_numeric(df["event_id"], errors="coerce").fillna(0).astype(int)
 

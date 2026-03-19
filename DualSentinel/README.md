@@ -75,6 +75,7 @@ python src/llm_judge.py --input results/windows_scored.json
 
 # Avaliação com métricas
 python src/pipeline.py --input data/samples/sample_lmd.csv --dataset lmd --evaluate
+python src/pipeline.py --input data/samples/LMD-2023 [1.75M Elements - Normal]checked.csv --dataset lmd --evaluate
 ```
 
 ## Estrutura de ficheiros

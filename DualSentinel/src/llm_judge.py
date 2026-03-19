@@ -18,6 +18,7 @@ Boas práticas anti-alucinação:
 import json
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Optional, TYPE_CHECKING
@@ -138,6 +139,47 @@ class LLMJudge:
                 f"Certifica-te que 'ollama serve' está a correr. Erro: {e}"
             )
 
+    @staticmethod
+    def _extract_json(raw: str) -> dict:
+        """
+        Extract a JSON object from a model response that may contain prose,
+        markdown fences, or other surrounding text.
+        Tries in order:
+          1. Direct parse
+          2. Strip markdown code fences (```json ... ``` or ``` ... ```)
+          3. Regex scan for first {...} block
+        """
+        # 1. Direct parse
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            pass
+
+        # 2. Strip markdown fences
+        fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)
+        if fence_match:
+            try:
+                return json.loads(fence_match.group(1))
+            except json.JSONDecodeError:
+                pass
+
+        # 3. Find the first {...} block (greedy, handles nested braces)
+        brace_start = raw.find("{")
+        if brace_start != -1:
+            depth = 0
+            for i, ch in enumerate(raw[brace_start:], brace_start):
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            return json.loads(raw[brace_start:i + 1])
+                        except json.JSONDecodeError:
+                            break
+
+        raise json.JSONDecodeError("No valid JSON object found in response", raw, 0)
+
     def judge(self, window: dict, slm_analysis: Optional["SLMAnalysis"] = None) -> JudgeResult:
         """
         Avalia uma janela e devolve JudgeResult.
@@ -177,17 +219,16 @@ class LLMJudge:
                         {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
                         {"role": "user", "content": user_content},
                     ],
-                    options={"temperature": 0.1, "num_predict": 1024},
+                    format="json",
+                    options={"temperature": 0.1, "num_predict": 2048},
                 )
 
                 raw = response.message.content.strip()
-                # Limpar possíveis markdown fences
-                if raw.startswith("```"):
-                    raw = raw.split("```")[1]
-                    if raw.startswith("json"):
-                        raw = raw[4:]
 
-                parsed = json.loads(raw)
+                if not raw:
+                    raise json.JSONDecodeError("Empty response from model", "", 0)
+
+                parsed = self._extract_json(raw)
                 result.anomaly_score = int(parsed.get("anomaly_score", 0))
                 result.verdict = parsed.get("verdict", "normal")
                 result.techniques = parsed.get("techniques", [])
@@ -198,8 +239,11 @@ class LLMJudge:
 
             except json.JSONDecodeError as e:
                 logger.warning(f"JSON parse error (attempt {attempt + 1}): {e}")
+                logger.debug(f"Raw response was: {raw!r}")
                 if attempt == self.max_retries - 1:
-                    result.error = f"JSON parse failed: {e}"
+                    result.error = f"JSON parse failed after {self.max_retries} attempts: {e}"
+                else:
+                    time.sleep(self.retry_delay)
             except Exception as e:
                 logger.error(f"Judge error (attempt {attempt + 1}): {e}")
                 if attempt == self.max_retries - 1:

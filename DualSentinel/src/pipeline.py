@@ -315,7 +315,7 @@ app = typer.Typer()
 
 @app.command()
 def main(
-    input: Path = typer.Argument(..., help="CSV ou EVTX de input"),
+    input: Path = typer.Option(..., help="CSV ou EVTX de input"),
     dataset: str = typer.Option("lmd", help="Formato: lmd, splunk, silrad"),
     output_dir: Optional[Path] = typer.Option(None, help="Directório de output"),
     model_dir: Optional[Path] = typer.Option(None, help="Directório com modelos pré-treinados"),
