@@ -64,6 +64,13 @@ python src/pipeline.py --input data/samples/sample_lmd.csv --dataset lmd
 # Saltar o passo LLM (só detectores clássicos)
 python src/pipeline.py --input data/samples/sample_lmd.csv --dataset lmd --skip-judge
 
+# Saltar IsolationForest + GRU (apenas ATT&CK rule tagger como filtro)
+# Com --skip-detectors o score máximo é 0.2 → usar --threshold 0.2
+python src/pipeline.py --input data/samples/sample_lmd.csv --dataset lmd --skip-detectors --threshold 0.2
+
+# Sobrepor o threshold sem alterar o .env
+python src/pipeline.py --input data/samples/sample_lmd.csv --dataset lmd --threshold 0.4
+
 # Só pre-processar
 python src/preprocessor.py --input data/samples/sample_lmd.csv --output results/windows.json
 
@@ -75,7 +82,7 @@ python src/llm_judge.py --input results/windows_scored.json
 
 # Avaliação com métricas
 python src/pipeline.py --input data/samples/sample_lmd.csv --dataset lmd --evaluate
-python src/pipeline.py --input data/samples/LMD-2023 [1.75M Elements - Normal]checked.csv --dataset lmd --evaluate
+python src/pipeline.py --input "data/samples/LMD-2023 [1.75M Elements - Normal]checked.csv" --dataset lmd --evaluate
 ```
 
 ## Estrutura de ficheiros
@@ -108,9 +115,24 @@ JUDGE_MODEL=llama3.1         # LLM Judge (validação final); usar llama3.1:70b 
 
 # Thresholds do pipeline
 ANOMALY_THRESHOLD=0.6        # detector score acima do qual a janela vai ao SLM+Judge
+                             # (sobreposto por --threshold na CLI)
 WINDOW_SIZE_SECONDS=60       # tamanho das janelas temporais
 MAX_EVENTS_PER_WINDOW=200    # limite de eventos por janela
 ```
+
+## Opções da CLI
+
+| Opção | Tipo | Default | Descrição |
+| --- | --- | --- | --- |
+| `--input` | path | — | CSV ou EVTX de input |
+| `--dataset` | str | `lmd` | Schema do CSV: `lmd`, `splunk`, `silrad` |
+| `--output-dir` | path | `results/YYYY-MM-DD_HH-MM` | Directório de output |
+| `--model-dir` | path | — | Directório com modelo IForest pré-treinado |
+| `--skip-judge` | flag | off | Salta SLM Analyst + LLM Judge |
+| `--skip-detectors` | flag | off | Salta IsolationForest e GRU; mantém o ATT&CK rule tagger |
+| `--threshold` | float | `.env` | Sobreponha `ANOMALY_THRESHOLD` (útil com `--skip-detectors 0.2`) |
+| `--evaluate` | flag | off | Calcula métricas (requer coluna `label` no CSV) |
+| `--verbose` | flag | off | Log detalhado (DEBUG) |
 
 ## Referências
 

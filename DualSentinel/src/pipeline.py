@@ -144,11 +144,16 @@ def run_pipeline(
     output_dir: Optional[Path] = None,
     model_dir: Optional[Path] = None,
     skip_judge: bool = False,
+    skip_detectors: bool = False,
+    threshold: Optional[float] = None,
     evaluate: bool = False,
 ) -> dict:
     """
     Pipeline completo. Devolve dict com resultados e caminhos de output.
+
+    threshold: sobrepõe ANOMALY_THRESHOLD do .env quando fornecido.
     """
+    effective_threshold = threshold if threshold is not None else ANOMALY_THRESHOLD
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M")
     if output_dir is None:
         output_dir = Path("results") / ts
@@ -172,27 +177,31 @@ def run_pipeline(
     )
     console.print(f"  → {len(windows)} janelas criadas")
 
-    # Feature matrix
+    # Feature matrix (needed for GRU/IForest when not skipped)
     X = np.array([w.to_feature_vector() for w in windows])
 
     # ── 3. IsolationForest ────────────────────
-    console.print("[bold]Step 3:[/bold] IsolationForest scoring...")
-    model_path = (model_dir or output_dir) / "iforest.pkl"
-
-    if model_dir and (model_dir / "iforest.pkl").exists():
-        iforest = IForestDetector.load(model_dir / "iforest.pkl")
-        console.print("  → Modelo carregado de disco")
+    if_scores = np.zeros(len(windows))
+    if skip_detectors:
+        console.print("[dim]Step 3: IsolationForest skipped (--skip-detectors)[/dim]")
     else:
-        iforest = IForestDetector()
-        iforest.fit(X)
-        iforest.save(model_path)
-
-    if_scores = iforest.score(X)
+        console.print("[bold]Step 3:[/bold] IsolationForest scoring...")
+        model_path = (model_dir or output_dir) / "iforest.pkl"
+        if model_dir and (model_dir / "iforest.pkl").exists():
+            iforest = IForestDetector.load(model_dir / "iforest.pkl")
+            console.print("  → Modelo carregado de disco")
+        else:
+            iforest = IForestDetector()
+            iforest.fit(X)
+            iforest.save(model_path)
+        if_scores = iforest.score(X)
 
     # ── 4. GRU (opcional, só se há janelas suficientes) ──
     gru_scores = np.zeros(len(windows))
     seq_len = 10
-    if len(windows) >= seq_len + 1:
+    if skip_detectors:
+        console.print("[dim]Step 4: GRU skipped (--skip-detectors)[/dim]")
+    elif len(windows) >= seq_len + 1:
         console.print("[bold]Step 4:[/bold] GRU sequence scoring...")
         gru = GRUDetector(feature_dim=X.shape[1], seq_len=seq_len)
         sequences = np.array([X[i:i+seq_len] for i in range(len(X) - seq_len)])
@@ -208,7 +217,11 @@ def run_pipeline(
         console.print("[dim]Step 4: GRU skipped (janelas insuficientes)[/dim]")
 
     # ── 5. Rule tagging + ensemble score ──────
+    # Rule tagger always runs regardless of --skip-detectors.
+    # When detectors are skipped, ensemble score is driven solely by rule hits.
     console.print("[bold]Step 5:[/bold] ATT&CK rule tagging + ensemble score...")
+    if skip_detectors:
+        console.print("  [dim](detector scores zeroed — escalation driven by ATT&CK rule hits only)[/dim]")
     window_dicts = []
     for i, w in enumerate(windows):
         wd = w.to_dict()
@@ -227,8 +240,8 @@ def run_pipeline(
     with open(windows_path, "w") as f:
         json.dump(window_dicts, f, indent=2, default=str)
 
-    high_risk_count = sum(1 for w in window_dicts if w["detector_score"] >= ANOMALY_THRESHOLD)
-    console.print(f"  → {high_risk_count}/{len(window_dicts)} janelas acima do threshold ({ANOMALY_THRESHOLD})")
+    high_risk_count = sum(1 for w in window_dicts if w["detector_score"] >= effective_threshold)
+    console.print(f"  → {high_risk_count}/{len(window_dicts)} janelas acima do threshold ({effective_threshold})")
 
     # ── 6. SLM Analyst (Phi-3) + LLM Judge (Llama 3.1) ──
     judge_results: list[JudgeResult] = []
@@ -241,7 +254,7 @@ def run_pipeline(
                 f"({os.getenv('SLM_MODEL', 'phi3:medium')})..."
             )
             analyst = SLMAnalyst()
-            slm_analyses = analyst.analyse_batch(window_dicts, threshold=ANOMALY_THRESHOLD)
+            slm_analyses = analyst.analyse_batch(window_dicts, threshold=effective_threshold)
             console.print(f"  → {len(slm_analyses)} janelas pré-diagnosticadas pelo SLM")
 
             slm_path = output_dir / "slm_analyses.json"
@@ -260,7 +273,7 @@ def run_pipeline(
             judge_results = judge.judge_batch(
                 window_dicts,
                 slm_analyses=slm_analyses if slm_analyses else None,
-                threshold=ANOMALY_THRESHOLD,
+                threshold=effective_threshold,
                 max_windows=50,
             )
 
@@ -320,6 +333,8 @@ def main(
     output_dir: Optional[Path] = typer.Option(None, help="Directório de output"),
     model_dir: Optional[Path] = typer.Option(None, help="Directório com modelos pré-treinados"),
     skip_judge: bool = typer.Option(False, help="Salta o LLM judge (economiza tokens)"),
+    skip_detectors: bool = typer.Option(False, help="Salta IsolationForest e GRU; mantém o ATT&CK rule tagger"),
+    threshold: Optional[float] = typer.Option(None, help="Sobrepõe ANOMALY_THRESHOLD do .env (ex: 0.2 com --skip-detectors)"),
     evaluate: bool = typer.Option(False, help="Calcula métricas (requer labels)"),
     verbose: bool = typer.Option(False, help="Log detalhado"),
 ):
@@ -332,6 +347,8 @@ def main(
         output_dir=output_dir,
         model_dir=model_dir,
         skip_judge=skip_judge,
+        skip_detectors=skip_detectors,
+        threshold=threshold,
         evaluate=evaluate,
     )
 
