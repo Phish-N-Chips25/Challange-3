@@ -10,6 +10,8 @@ The name reflects the dual-layer architecture: fast statistical detectors act as
 
 ## High-Level Architecture
 
+### Full pipeline (default)
+
 ```
 Raw Logs (EVTX or CSV)
         │
@@ -40,6 +42,51 @@ Raw Logs (EVTX or CSV)
 │   Results          │  JSON files + Markdown report
 └────────────────────┘
 ```
+
+### Detectors skipped — all windows to LLM (`--skip-detectors --threshold 0.0`)
+
+IsolationForest and GRU are bypassed. The ATT&CK rule tagger still runs (it always does), and with `--threshold 0.0` **every window** is forwarded directly to the LLM stages regardless of rule hits.
+
+On the LMD-2023 dataset this produces **687 350 events → 1 424 windows**, all passed to SLM, with the Judge capped at the first 50.
+
+```
+LMD-2023 [1.75M Elements - Normal]checked.csv
+        │
+        ▼
+┌─────────────────────────────────────────────────────────────┐
+│   Preprocessor                                              │
+│   687 350 events loaded → 1 424 × 60-second windows        │
+└─────────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌──────────────────────────────────────────────────────────┐
+│   ATT&CK Rule Tagger  (always runs)                      │  technique hits only
+│   IsolationForest score = 0 / GRU score = 0  (zeroed)   │  detector_score ≤ 0.2
+└──────────────────────────────────────────────────────────┘
+        │  threshold = 0.0 → all 1 424 windows pass
+        ▼
+┌──────────────────────────────────────────────────────────┐
+│   SLM Analyst  (Phi-3 Medium)                            │
+│   1 424 windows analysed sequentially                    │  pre_score, risk_level,
+│   → slm_analyses.json                                    │  suspected_techniques
+└──────────────────────────────────────────────────────────┘
+        │  top 50 windows (by detector_score, then time order)
+        ▼
+┌──────────────────────────────────────────────────────────┐
+│   LLM Judge  (Llama 3.2)                                 │
+│   50 / 1 424 windows judged (max_windows cap)            │  anomaly_score, verdict,
+│   → judge_results.json                                   │  ATT&CK techniques
+└──────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌────────────────────┐
+│   Results          │  JSON files + Markdown report
+└────────────────────┘
+```
+
+> **Note:** With all detector scores at `0.0` the Judge's 50-window cap takes the first 50 windows in time order. For full coverage on large datasets raise the cap via `max_windows` in `judge_batch()` or pre-filter with `--skip-detectors --threshold 0.2` to still benefit from ATT&CK rule hits as a gate.
+
+> **Common mistake:** Running `--skip-detectors` without `--threshold` leaves the default threshold at `0.6`. Since the maximum possible `detector_score` with detectors skipped is `0.2` (ATT&CK rule hits only), **0 windows will ever reach the SLM/Judge**. Always pair `--skip-detectors` with an explicit `--threshold`.
 
 ---
 
@@ -220,8 +267,12 @@ python src/pipeline.py --input data/samples/sample_lmd.csv --dataset lmd
 # Skip LLM stages (detectors only)
 python src/pipeline.py --input data/samples/sample_lmd.csv --dataset lmd --skip-judge
 
-# Skip IsolationForest + GRU (rule tagger only as filter)
+# Skip IsolationForest + GRU, use ATT&CK rule hits as the only gate
+# NOTE: --threshold is required — omitting it keeps the default 0.6 which lets 0 windows through
 python src/pipeline.py --input data/samples/sample_lmd.csv --dataset lmd --skip-detectors --threshold 0.2
+
+# Skip all detectors, send every window to SLM + Judge (slow on large datasets — 1424 windows on LMD-2023)
+python src/pipeline.py --input data/samples/sample_lmd.csv --dataset lmd --skip-detectors --threshold 0.0
 
 # Override threshold without editing .env
 python src/pipeline.py --input data/samples/sample_lmd.csv --dataset lmd --threshold 0.4
