@@ -192,10 +192,13 @@ def parse_csv(path: Path, dataset: str = "lmd") -> pd.DataFrame:
     df = df.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
     df["event_id"] = pd.to_numeric(df["event_id"], errors="coerce").fillna(0).astype(int)
 
-    # Normalizar nome do processo (basename)
+    # Normalizar nome do processo (basename) — vectorised str ops, no per-row Path()
     if "process_name" in df.columns:
-        df["process_name"] = df["process_name"].astype(str).apply(
-            lambda x: Path(x).name.lower() if x else ""
+        df["process_name"] = (
+            df["process_name"].astype(str)
+            .str.replace("\\\\", "/", regex=False)
+            .str.split("/").str[-1]
+            .str.lower()
         )
 
     # Filtrar apenas EventIDs relevantes
@@ -322,18 +325,29 @@ def make_windows(
         wf.event_id_entropy = _entropy(chunk["event_id"].astype(str))
 
         # Criar resumo textual dos eventos para o evidence pack
+        # itertuples is ~10x faster than iterrows for simple field access
         summaries = []
-        for _, row in chunk.iterrows():
-            parts = [f"EID={row.get('event_id', '?')}"]
-            if row.get("process_name"):
-                parts.append(f"proc={row['process_name']}")
-            if row.get("network_dest_ip"):
-                parts.append(f"dst={row['network_dest_ip']}:{row.get('network_dest_port', '?')}")
-            if row.get("file_path"):
-                parts.append(f"file={row['file_path']}")
-            if row.get("command_line") and str(row["command_line"]) != "nan":
-                cmd = str(row["command_line"])[:120]
-                parts.append(f"cmd={cmd}")
+        ip_col = "network_dest_ip" in chunk.columns
+        port_col = "network_dest_port" in chunk.columns
+        file_col = "file_path" in chunk.columns
+        cmd_col = "command_line" in chunk.columns
+        for row in chunk.itertuples(index=False):
+            parts = [f"EID={row.event_id}"]
+            pname = getattr(row, 'process_name', '')
+            if pname:
+                parts.append(f"proc={pname}")
+            if ip_col:
+                ip = getattr(row, 'network_dest_ip', '')
+                if ip:
+                    parts.append(f"dst={ip}:{getattr(row, 'network_dest_port', '?')}")
+            if file_col:
+                fp = getattr(row, 'file_path', '')
+                if fp:
+                    parts.append(f"file={fp}")
+            if cmd_col:
+                cmd = str(getattr(row, 'command_line', ''))
+                if cmd and cmd != 'nan':
+                    parts.append(f"cmd={cmd[:120]}")
             summaries.append(" | ".join(parts))
         wf.event_summaries = summaries[:50]  # máximo 50 linhas no evidence pack
 

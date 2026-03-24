@@ -1,12 +1,20 @@
 """
 llm_judge.py
-LLM-as-a-Judge usando Llama 3.1 via Ollama local.
+LLM-as-a-Judge — deep-dive validation via Ollama local.
+Default model: llama3.2 (override with JUDGE_MODEL env var).
 
 Para cada janela de risco alto:
-  1. Recebe o pré-diagnóstico do SLM Analyst (Phi-3 Medium)
-  2. Constrói o evidence pack completo
-  3. Envia ambos ao Llama 3.1 para validação final
+  1. Recebe o pré-diagnóstico do SLM Analyst (phi3:mini por defeito)
+  2. Recupera o evidence pack cacheado (construído uma vez por janela, partilhado com SLM)
+  3. Envia ambos ao LLM Judge para validação final
   4. Devolve: técnicas ATT&CK, score [0-10], rationale, flags de evidência
+
+Optimizações:
+  - Salta o Judge para janelas com SLM pre_score<3 e needs_deep_analysis=False
+  - Sort por (detector_score, SLM pre_score) para priorizar as janelas mais suspeitas
+    quando os detector scores são iguais (ex.: --skip-detectors)
+  - num_predict=1024 para respostas suficientemente detalhadas sem overhead excessivo
+  - Sleep 0.1 s entre chamadas ao Ollama
 
 Boas práticas anti-alucinação:
   - Judge penaliza claims sem evidência no pack
@@ -45,7 +53,7 @@ You are a senior cybersecurity analyst and LLM judge evaluating Sysmon/ETW \
 log windows for signs of attack.
 
 You will receive:
-1. A PRE-DIAGNOSIS from a first-pass SLM analyst (Phi-3 Medium) — treat this
+1. A PRE-DIAGNOSIS from a first-pass SLM analyst — treat this
    as a hypothesis to validate, not as established fact.
 2. The full EVIDENCE PACK with raw log statistics and event samples.
 
@@ -115,7 +123,7 @@ class JudgeResult:
 
 
 # ─────────────────────────────────────────────
-# LLM Judge (Llama 3.1 via Ollama)
+# LLM Judge (llama3.2 via Ollama, configurable via JUDGE_MODEL)
 # ─────────────────────────────────────────────
 
 class LLMJudge:
@@ -163,20 +171,13 @@ class LLMJudge:
             except json.JSONDecodeError:
                 pass
 
-        # 3. Find the first {...} block (greedy, handles nested braces)
-        brace_start = raw.find("{")
-        if brace_start != -1:
-            depth = 0
-            for i, ch in enumerate(raw[brace_start:], brace_start):
-                if ch == "{":
-                    depth += 1
-                elif ch == "}":
-                    depth -= 1
-                    if depth == 0:
-                        try:
-                            return json.loads(raw[brace_start:i + 1])
-                        except json.JSONDecodeError:
-                            break
+        # 3. Regex scan for first {...} block — faster than manual brace counter
+        brace_match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if brace_match:
+            try:
+                return json.loads(brace_match.group(0))
+            except json.JSONDecodeError:
+                pass
 
         raise json.JSONDecodeError("No valid JSON object found in response", raw, 0)
 
@@ -220,7 +221,7 @@ class LLMJudge:
                         {"role": "user", "content": user_content},
                     ],
                     format="json",
-                    options={"temperature": 0.1, "num_predict": 2048},
+                    options={"temperature": 0.1, "num_predict": 1024},
                 )
 
                 raw = response.message.content.strip()
@@ -270,8 +271,6 @@ class LLMJudge:
         high_risk = [
             w for w in windows if w.get("detector_score", 0.0) >= threshold
         ]
-        high_risk.sort(key=lambda w: w.get("detector_score", 0.0), reverse=True)
-        high_risk = high_risk[:max_windows]
 
         # Mapear pré-diagnósticos por window_start para lookup O(1)
         slm_map: dict = {}
@@ -279,23 +278,52 @@ class LLMJudge:
             for a in slm_analyses:
                 slm_map[a.window_start] = a
 
+        # Sort by detector_score desc; use SLM pre_score as tiebreaker so that
+        # when all detector scores are equal (e.g. --skip-detectors) the most
+        # suspicious windows (per SLM) are judged first and survive the cap.
+        high_risk.sort(
+            key=lambda w: (
+                w.get("detector_score", 0.0),
+                slm_map[w["window_start"]].pre_score
+                if w.get("window_start") in slm_map else 0,
+            ),
+            reverse=True,
+        )
+        high_risk = high_risk[:max_windows]
+
         logger.info(
             f"LLM Judge: {len(high_risk)}/{len(windows)} janelas "
             f"(threshold={threshold}, max={max_windows})"
         )
 
         results = []
+        skipped_low_risk = 0
         for i, w in enumerate(high_risk, 1):
             slm = slm_map.get(w.get("window_start", ""))
-            logger.info(
+
+            # Skip Judge for windows the SLM already cleared as low-risk
+            if slm and not slm.needs_deep_analysis and slm.pre_score < 3:
+                skipped_low_risk += 1
+                logger.debug(
+                    f"Judge skipping window {i}/{len(high_risk)} "
+                    f"(SLM: pre_score={slm.pre_score}, needs_deep_analysis=False)"
+                )
+                continue
+
+            logger.debug(
                 f"Judging window {i}/{len(high_risk)} "
                 f"(detector_score={w.get('detector_score', 0.0):.3f}, "
                 f"slm_pre_score={slm.pre_score if slm else 'N/A'})"
             )
             r = self.judge(w, slm_analysis=slm)
             results.append(r)
-            time.sleep(0.5)
+            time.sleep(0.1)
 
+        if skipped_low_risk:
+            logger.info(
+                f"Judge complete: {len(results)} judged, "
+                f"{skipped_low_risk} skipped (SLM pre_score<3, needs_deep_analysis=False)"
+            )
         return results
 
 

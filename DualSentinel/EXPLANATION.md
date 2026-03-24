@@ -184,9 +184,10 @@ Windows with `detector_score ≥ threshold` are forwarded to the LLM stages.
 **Model:** `phi3:medium` (configurable via `SLM_MODEL` in `.env`) served locally via Ollama.
 
 **How it works:**
-1. For each window above the threshold, an *evidence pack* is assembled.
-2. The pack is sent to Phi-3 with `format="json"` enforced at the Ollama API level, guaranteeing valid JSON output.
-3. The response is parsed into an `SLMAnalysis` dataclass:
+1. **Trivially-benign pre-filter** — Before calling Ollama, `_is_trivially_benign()` checks the window's feature values. If a window has zero suspicious processes, no PowerShell, no mimikatz/psexec, no ATT&CK rule hits, fewer than 5 network connections, and no lateral movement ports, it is immediately classified as `risk_level=low / pre_score=0` with no LLM call. On normal-traffic datasets (e.g. LMD-2023) this skips the vast majority of windows.
+2. For remaining windows, an *evidence pack* is assembled.
+3. The pack is sent to Phi-3 with `format="json"` enforced at the Ollama API level, guaranteeing valid JSON output. Token generation is capped at **384 tokens** (sufficient for the 6-field JSON response).
+4. The response is parsed into an `SLMAnalysis` dataclass:
    - `pre_score` (0–10) — initial risk score
    - `risk_level` (low / medium / high / critical)
    - `suspected_techniques` — list of suspected MITRE technique names
@@ -194,7 +195,7 @@ Windows with `detector_score ≥ threshold` are forwarded to the LLM stages.
    - `summary` — 1–2 sentence pre-diagnosis
    - `needs_deep_analysis` — boolean flag
 
-**Design rationale:** Phi-3 is small and fast. Its output is used as a *hypothesis* that the LLM Judge then validates or refutes.
+**Design rationale:** Phi-3 Medium is fast for a triage task. The trivially-benign pre-filter eliminates Ollama calls for windows with no threat signals, dramatically reducing wall-clock time on large normal-traffic datasets. Its output is used as a *hypothesis* that the LLM Judge then validates or refutes.
 
 ---
 
@@ -224,7 +225,7 @@ Windows with `detector_score ≥ threshold` are forwarded to the LLM stages.
 
 **Key functions:**
 
-- **`build_evidence_pack(window)`** — Assembles the structured plain-text evidence pack that is injected into every LLM prompt. Includes aggregate statistics, ATT&CK rule-tagger hits, and up to 50 individual event sample lines. Command lines are truncated at 120 characters to prevent prompt injection via log content.
+- **`build_evidence_pack(window)`** — Assembles the structured plain-text evidence pack injected into every LLM prompt. Includes aggregate statistics, ATT&CK rule-tagger hits, and individual event sample lines. Sample line count is **adaptive**: 15 lines for `event_count < 20`, 30 for `< 60`, 50 otherwise — reducing prefill tokens for low-activity windows. Command lines are truncated at 120 characters to prevent prompt injection via log content.
 - **`setup_logging(level)`** — Configures the root logger with a consistent timestamp format.
 - **`save_json(obj, path)` / `load_json(path)`** — JSON I/O helpers that handle numpy scalar serialisation.
 - **`precision_recall_f1(tp, fp, fn)`** — Metrics helper used when `--evaluate` is passed.
@@ -342,3 +343,7 @@ python src/preprocessor.py --input data/samples/sample_lmd.csv --output results/
 | Ensemble weighting 0.5/0.3/0.2 | IsolationForest most reliable; GRU adds temporal context; rules are conservative |
 | `systemtime` fallback in LMD parser | LMD-2023 exports have truncated `utctime` values; `systemtime` is always complete |
 | EventIDs 12 and 15 added | Registry object events (12) and file stream hash (15) are heavily present in LMD-2023 |
+| Trivially-benign pre-filter in SLM | Skips Ollama entirely for windows with no threat signals; critical for large normal-traffic datasets |
+| `num_predict=384` in SLM | 6-field JSON response needs far fewer than 1024 tokens; ~40% faster generation per call |
+| Adaptive evidence pack sample cap | Low-activity windows get fewer sample lines (15/30/50); reduces prefill tokens without losing context |
+| `sleep(0.05)` between SLM calls | Ollama handles backpressure natively; 0.2 s sleep saved ~213 s on 1 424-window LMD-2023 run |

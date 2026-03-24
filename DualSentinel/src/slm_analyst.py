@@ -1,19 +1,21 @@
 """
 slm_analyst.py
-SLM Analyst usando Phi-3 Medium via Ollama local.
+SLM Analyst — rapid first-pass triage via Ollama local.
+Default model: phi3:mini (override with SLM_MODEL env var).
 
 Para cada janela de logs de alto risco:
-  1. Constrói o evidence pack
-  2. Envia para Phi-3 Medium (modelo local, rápido)
-  3. Emite um pré-diagnóstico estruturado: score preliminar, técnicas
-     suspeitas e indicadores de risco
+  1. Trivially-benign pre-filter: skips Ollama entirely when no threat signals
+  2. Builds the evidence pack (cached on window dict by build_evidence_pack)
+  3. Sends to SLM for structured pre-diagnosis: score, techniques, risk indicators
+  4. Returns (SLMAnalysis, called_ollama) — called_ollama=False for pre-filtered windows
 
-O pré-diagnóstico é depois passado ao LLM Judge (Llama 3.1) para
+O pré-diagnóstico é depois passado ao LLM Judge (llama3.2 por defeito) para
 validação final com grounding mais rigoroso.
 
 Boas práticas:
   - Temperatura 0.1 para respostas determinísticas
-  - Número de tokens limitado (512) — só pré-diagnóstico, não análise final
+  - num_predict=384 — suficiente para pré-diagnóstico, não análise final
+  - Sleep (0.05 s) apenas após chamadas reais ao Ollama, não para janelas pré-filtradas
   - Sanitização do evidence pack (feita em build_evidence_pack)
 """
 
@@ -32,11 +34,11 @@ from utils import build_evidence_pack
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-SLM_MODEL = os.getenv("SLM_MODEL", "phi3:medium")
+SLM_MODEL = os.getenv("SLM_MODEL", "phi3:mini")
 
 # ─────────────────────────────────────────────
-# System prompt — deve ser conciso para caber
-# no context window do Phi-3 Medium (4 k–128 k)
+# System prompt — conciso para caber no context
+# window do modelo SLM (phi3:mini ≈ 4 k tokens)
 # ─────────────────────────────────────────────
 
 ANALYST_SYSTEM_PROMPT = """\
@@ -92,7 +94,7 @@ class SLMAnalysis:
         tech_str = ", ".join(self.suspected_techniques) if self.suspected_techniques else "none identified"
         ind_str = "\n  - ".join(self.risk_indicators) if self.risk_indicators else "none"
         return (
-            f"=== SLM PRE-DIAGNOSIS (Phi-3 Medium) ===\n"
+            f"=== SLM PRE-DIAGNOSIS ({self.model_used}) ===\n"
             f"Pre-score: {self.pre_score}/10\n"
             f"Risk level: {self.risk_level}\n"
             f"Suspected techniques: {tech_str}\n"
@@ -125,8 +127,35 @@ class SLMAnalyst:
                 f"Certifica-te que 'ollama serve' está a correr. Erro: {e}"
             )
 
-    def analyse(self, window: dict) -> SLMAnalysis:
-        """Analisa uma janela e devolve SLMAnalysis."""
+    @staticmethod
+    def _is_trivially_benign(window: dict) -> bool:
+        """Fast pre-filter: returns True for windows with no threat signals at all.
+        Skips the Ollama call entirely for clearly benign windows."""
+        return (
+            window.get("suspicious_process_count", 0) == 0
+            and window.get("powershell_count", 0) == 0
+            and not window.get("has_mimikatz", False)
+            and not window.get("has_psexec", False)
+            and not window.get("attck_hits")
+            and window.get("network_connection_count", 0) < 5
+            and window.get("lateral_movement_port_count", 0) == 0
+        )
+
+    def analyse(self, window: dict) -> tuple["SLMAnalysis", bool]:
+        """Analisa uma janela e devolve (SLMAnalysis, called_ollama).
+        called_ollama is False when the trivially-benign pre-filter short-circuits."""
+        # Fast-path: skip Ollama entirely for windows with no threat signals
+        if self._is_trivially_benign(window):
+            return SLMAnalysis(
+                window_start=window.get("window_start", ""),
+                window_end=window.get("window_end", ""),
+                pre_score=0,
+                risk_level="low",
+                needs_deep_analysis=False,
+                summary="Trivially benign — no threat signals detected (pre-filter).",
+                model_used=self.model,
+            ), False
+
         pack = build_evidence_pack(window)
 
         result = SLMAnalysis(
@@ -147,7 +176,7 @@ class SLMAnalyst:
                         },
                     ],
                     format="json",
-                    options={"temperature": 0.1, "num_predict": 1024},
+                    options={"temperature": 0.1, "num_predict": 384},
                 )
 
                 raw = response.message.content.strip()
@@ -179,7 +208,7 @@ class SLMAnalyst:
                 else:
                     time.sleep(1.0)
 
-        return result
+        return result, True
 
     def analyse_batch(
         self,
@@ -199,15 +228,23 @@ class SLMAnalyst:
         )
 
         results = []
+        ollama_calls = 0
         for i, w in enumerate(high_risk, 1):
-            logger.info(
-                f"SLM analysing window {i}/{len(high_risk)} "
-                f"(detector_score={w.get('detector_score', 0.0):.3f})"
-            )
-            r = self.analyse(w)
+            r, called_ollama = self.analyse(w)
             results.append(r)
-            time.sleep(0.2)  # Dar folga ao Ollama entre chamadas
+            if called_ollama:
+                ollama_calls += 1
+                logger.debug(
+                    f"SLM [{ollama_calls} Ollama calls / {i} processed] "
+                    f"{w.get('window_start', '')[:19]} → {r.risk_level}"
+                )
+                time.sleep(0.05)  # Yield only after real Ollama calls
 
+        pre_filtered = len(high_risk) - ollama_calls
+        logger.info(
+            f"SLM complete: {ollama_calls} Ollama calls, "
+            f"{pre_filtered} pre-filtered as benign, {len(high_risk)} total"
+        )
         return results
 
 

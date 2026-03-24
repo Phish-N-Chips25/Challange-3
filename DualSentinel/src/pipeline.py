@@ -251,7 +251,7 @@ def run_pipeline(
         try:
             console.print(
                 f"[bold]Step 6a:[/bold] SLM pre-diagnosis "
-                f"({os.getenv('SLM_MODEL', 'phi3:medium')})..."
+                f"({os.getenv('SLM_MODEL', 'phi3:mini')})..."
             )
             analyst = SLMAnalyst()
             slm_analyses = analyst.analyse_batch(window_dicts, threshold=effective_threshold)
@@ -267,7 +267,7 @@ def run_pipeline(
         try:
             console.print(
                 f"[bold]Step 6b:[/bold] LLM judge validation "
-                f"({os.getenv('JUDGE_MODEL', 'llama3.1')})..."
+                f"({os.getenv('JUDGE_MODEL', 'llama3.2')})..."
             )
             judge = LLMJudge()
             judge_results = judge.judge_batch(

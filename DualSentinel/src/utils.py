@@ -53,7 +53,11 @@ def build_evidence_pack(window: dict) -> str:
     Constrói texto estruturado com os factos da janela.
     Contém apenas o que existe nos dados — sem inferências.
     Command lines são truncadas a 120 chars para evitar prompt injection.
+    The result is cached on the window dict under '_evidence_pack' to avoid
+    rebuilding when both SLM and Judge process the same window.
     """
+    if "_evidence_pack" in window:
+        return window["_evidence_pack"]
     lines = [
         "=== EVIDENCE PACK ===",
         f"Window: {window.get('window_start')} → {window.get('window_end')}",
@@ -88,10 +92,15 @@ def build_evidence_pack(window: dict) -> str:
 
     summaries = window.get("event_summaries", [])
     if summaries:
-        lines += ["", "--- Individual event samples (max 50) ---"]
-        for i, s in enumerate(summaries[:50], 1):
+        # Cap sample lines based on window activity: low-event windows need fewer examples
+        event_count = window.get("event_count", 0)
+        max_samples = 15 if event_count < 20 else 30 if event_count < 60 else 50
+        lines += ["", f"--- Individual event samples (max {max_samples}) ---"]
+        for i, s in enumerate(summaries[:max_samples], 1):
             # Truncate to 120 chars to prevent prompt injection via log content
             safe = str(s)[:120].replace("```", "'''")
             lines.append(f"  [{i:02d}] {safe}")
 
-    return "\n".join(lines)
+    result = "\n".join(lines)
+    window["_evidence_pack"] = result  # cache to avoid rebuilding for Judge after SLM
+    return result
