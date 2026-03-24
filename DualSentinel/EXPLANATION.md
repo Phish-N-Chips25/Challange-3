@@ -32,7 +32,7 @@ Raw Logs (EVTX or CSV)
         │
         ▼
 ┌────────────────────┐
-│   LLM Judge        │  Llama 3.1/3.2 (Ollama) — validate/refute, ATT&CK mapping, final score
+│   LLM Judge        │  Llama 3.2 (Ollama) — validate/refute, ATT&CK mapping, final score
 └────────────────────┘
         │
         ▼
@@ -155,7 +155,7 @@ Windows with `detector_score ≥ threshold` are forwarded to the LLM stages.
 
 **Purpose:** Structured, rubric-guided cybersecurity judge that validates or refutes the SLM pre-diagnosis and produces a final, auditable verdict.
 
-**Model:** `llama3.1` or `llama3.2` (configurable via `JUDGE_MODEL` in `.env`) served locally via Ollama.
+**Model:** `llama3.2` (configurable via `JUDGE_MODEL` in `.env`) served locally via Ollama.
 
 **How it works:**
 1. Receives the evidence pack plus the `SLMAnalysis` pre-diagnosis.
@@ -171,6 +171,19 @@ Windows with `detector_score ≥ threshold` are forwarded to the LLM stages.
 
 ---
 
+### `utils.py` — Shared Helpers
+
+**Purpose:** Shared utilities used across the SLM Analyst and LLM Judge modules.
+
+**Key functions:**
+
+- **`build_evidence_pack(window)`** — Assembles the structured plain-text evidence pack that is injected into every LLM prompt. Includes aggregate statistics, ATT&CK rule-tagger hits, and up to 50 individual event sample lines. Command lines are truncated at 120 characters to prevent prompt injection via log content.
+- **`setup_logging(level)`** — Configures the root logger with a consistent timestamp format.
+- **`save_json(obj, path)` / `load_json(path)`** — JSON I/O helpers that handle numpy scalar serialisation.
+- **`precision_recall_f1(tp, fp, fn)`** — Metrics helper used when `--evaluate` is passed.
+
+---
+
 ### `pipeline.py` — Orchestrator
 
 Ties everything together in 8 steps:
@@ -182,8 +195,8 @@ Ties everything together in 8 steps:
 | 3 | IsolationForest scoring | `--skip-detectors` |
 | 4 | GRU sequence scoring | `--skip-detectors` |
 | 5 | ATT&CK rule tagging + ensemble score | rule tagger always runs |
-| 6a | SLM pre-diagnosis (Phi-3) | `--skip-judge` |
-| 6b | LLM judge validation (Llama) | `--skip-judge` |
+| 6a | SLM pre-diagnosis (Phi-3 Medium) | `--skip-judge` |
+| 6b | LLM judge validation (Llama 3.2, up to 50 windows) | `--skip-judge` |
 | 7 | Markdown report generation | — |
 | 8 | Metrics (if `--evaluate`) | — |
 
@@ -244,7 +257,7 @@ python src/preprocessor.py --input data/samples/sample_lmd.csv --output results/
 | Variable | Default | Description |
 |---|---|---|
 | `SLM_MODEL` | `phi3:medium` | Ollama model for SLM Analyst |
-| `JUDGE_MODEL` | `llama3.1` | Ollama model for LLM Judge |
+| `JUDGE_MODEL` | `llama3.2` | Ollama model for LLM Judge |
 | `ANOMALY_THRESHOLD` | `0.6` | Minimum detector score to escalate to LLMs (overridable with `--threshold`) |
 | `WINDOW_SIZE_SECONDS` | `60` | Time window size in seconds |
 | `MAX_EVENTS_PER_WINDOW` | `200` | Event cap per window |

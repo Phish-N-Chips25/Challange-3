@@ -32,7 +32,7 @@ from utils import build_evidence_pack
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-SLM_MODEL = os.getenv("SLM_MODEL", "phi3:mini")
+SLM_MODEL = os.getenv("SLM_MODEL", "phi3:medium")
 
 # ─────────────────────────────────────────────
 # System prompt — deve ser conciso para caber
