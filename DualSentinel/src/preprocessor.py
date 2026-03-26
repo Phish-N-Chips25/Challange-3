@@ -74,6 +74,10 @@ class WindowFeatures:
     has_psexec: bool = False
     event_id_entropy: float = 0.0
     process_entropy: float = 0.0
+    remote_thread_count: int = 0        # EventID 8  — CreateRemoteThread (process injection)
+    process_access_count: int = 0       # EventID 10 — ProcessAccess (LSASS credential access)
+    driver_load_count: int = 0          # EventID 6  — Driver loaded (rootkit / tamper)
+    file_delete_count: int = 0          # EventID 23 — File deleted (destruction / ransomware)
     # Lista de eventos resumidos para o evidence pack do judge
     event_summaries: list = field(default_factory=list)
 
@@ -97,6 +101,10 @@ class WindowFeatures:
             float(self.has_psexec),
             self.event_id_entropy,
             self.process_entropy,
+            self.remote_thread_count,
+            self.process_access_count,
+            self.driver_load_count,
+            self.file_delete_count,
         ], dtype=np.float32)
 
     def to_dict(self) -> dict:
@@ -115,12 +123,12 @@ def _entropy(series: pd.Series) -> float:
     return float(-np.sum(counts * np.log2(counts + 1e-9)))
 
 
-def parse_csv(path: Path, dataset: str = "lmd") -> pd.DataFrame:
+def parse_csv(path: Path, dataset: str = "lmd", nrows: int | None = None) -> pd.DataFrame:
     """
     Lê CSV de logs Sysmon. Suporta formatos LMD-2023 e Splunk Attack Data.
     Normaliza para colunas canónicas.
     """
-    df = pd.read_csv(path, low_memory=False, on_bad_lines="warn")
+    df = pd.read_csv(path, low_memory=False, on_bad_lines="warn", nrows=nrows)
     df.columns = df.columns.str.lower().str.strip()
 
     # Mapeamentos de nomes de colunas por dataset.
@@ -265,6 +273,76 @@ def parse_evtx(path: Path) -> pd.DataFrame:
     return df
 
 
+def parse_splunk_xml(path: Path) -> pd.DataFrame:
+    """
+    Parse Splunk Attack Data sysmon .log files.
+    Each line is a self-contained <Event ...>...</Event> XML element
+    (Windows Event Log XML format exported by Splunk / Atomic Red Team).
+    Returns the same normalised schema as parse_csv / parse_evtx.
+    """
+    import xml.etree.ElementTree as ET
+
+    NS = "http://schemas.microsoft.com/win/2004/08/events/event"
+
+    rows = []
+    with open(path, encoding="utf-8", errors="ignore") as fh:
+        for lineno, line in enumerate(fh, 1):
+            line = line.strip()
+            if not line or not line.startswith("<Event"):
+                continue
+            try:
+                root = ET.fromstring(line)
+                system = root.find(f"{{{NS}}}System")
+                if system is None:
+                    continue
+
+                eid_el = system.find(f"{{{NS}}}EventID")
+                event_id = int(eid_el.text) if eid_el is not None and eid_el.text else 0
+                if event_id not in RELEVANT_EVENT_IDS:
+                    continue
+
+                tc_el = system.find(f"{{{NS}}}TimeCreated")
+                ts_str = tc_el.get("SystemTime", "") if tc_el is not None else ""
+                ts = pd.to_datetime(ts_str, errors="coerce", utc=True)
+
+                # Build a flat dict of all <Data Name="..."> elements
+                ed: dict = {}
+                event_data = root.find(f"{{{NS}}}EventData")
+                if event_data is not None:
+                    for data_el in event_data.findall(f"{{{NS}}}Data"):
+                        name = (data_el.get("Name") or "").lower()
+                        ed[name] = data_el.text or ""
+
+                def _basename(val: str) -> str:
+                    return Path(val.replace("\\", "/")).name.lower() if val else ""
+
+                rows.append({
+                    "timestamp":        ts,
+                    "event_id":         event_id,
+                    "process_name":     _basename(ed.get("image", "")),
+                    "process_id":       int(ed.get("processid", 0) or 0),
+                    "parent_process":   _basename(ed.get("parentimage", "")),
+                    "target_process":   _basename(ed.get("targetimage", "")),
+                    "network_dest_ip":  ed.get("destinationip", ""),
+                    "network_dest_port": int(ed.get("destinationport", 0) or 0),
+                    "file_path":        ed.get("targetfilename", ""),
+                    "registry_key":     ed.get("targetobject", ""),
+                    "user":             ed.get("user", "") or ed.get("sourceuser", ""),
+                    "command_line":     ed.get("commandline", ""),
+                })
+            except ET.ParseError:
+                logger.debug(f"XML parse error at line {lineno}")
+                continue
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        logger.warning(f"No relevant Sysmon events parsed from {path.name}")
+        return df
+    df = df.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
+    logger.info(f"Parsed {len(df)} events from Splunk XML {path.name}")
+    return df
+
+
 def make_windows(
     df: pd.DataFrame,
     window_size_seconds: int = 60,
@@ -323,6 +401,12 @@ def make_windows(
             wf.outbound_unique_ips = ips[ips != ""].nunique()
 
         wf.event_id_entropy = _entropy(chunk["event_id"].astype(str))
+
+        # New per-EID counters for extended ATT&CK rule coverage
+        wf.remote_thread_count  = int((chunk["event_id"] == 8).sum())   # CreateRemoteThread
+        wf.process_access_count = int((chunk["event_id"] == 10).sum())  # ProcessAccess (LSASS)
+        wf.driver_load_count    = int((chunk["event_id"] == 6).sum())   # Driver loaded
+        wf.file_delete_count    = int((chunk["event_id"] == 23).sum())  # File deleted
 
         # Criar resumo textual dos eventos para o evidence pack
         # itertuples is ~10x faster than iterrows for simple field access

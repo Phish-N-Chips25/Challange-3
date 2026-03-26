@@ -68,6 +68,36 @@ ATTCK_RULES = [
         "condition": lambda w: w.get("outbound_unique_ips", 0) > 10,
         "confidence": 0.5,
     },
+    {
+        "technique": "T1055",
+        "name": "Process Injection (CreateRemoteThread)",
+        "condition": lambda w: w.get("remote_thread_count", 0) > 0,
+        "confidence": 0.85,
+    },
+    {
+        "technique": "T1003.001",
+        "name": "LSASS Memory Access (Credential Dumping)",
+        "condition": lambda w: w.get("process_access_count", 0) > 2,
+        "confidence": 0.80,
+    },
+    {
+        "technique": "T1014",
+        "name": "Rootkit / Suspicious Driver Load",
+        "condition": lambda w: w.get("driver_load_count", 0) > 0,
+        "confidence": 0.65,
+    },
+    {
+        "technique": "T1485",
+        "name": "Data Destruction (Mass File Delete)",
+        "condition": lambda w: w.get("file_delete_count", 0) > 10,
+        "confidence": 0.65,
+    },
+    {
+        "technique": "T1059.003",
+        "name": "Windows Command Shell",
+        "condition": lambda w: w.get("cmd_count", 0) > 3,
+        "confidence": 0.55,
+    },
 ]
 
 
