@@ -1,0 +1,19 @@
+name: cyber-anomaly
+channels:
+  - nvidia
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - jupyterlab
+  - ipykernel
+  - pandas
+  - numpy
+  - scikit-learn
+  - pytorch
+  - torchvision
+  - pytorch-cuda=12.4
+  - pip:
+      - -r requirements.txt

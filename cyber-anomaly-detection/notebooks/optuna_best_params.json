@@ -1,0 +1,10 @@
+{
+  "params": {
+    "max_features": 4096,
+    "ngram_max": 3,
+    "min_df": 2
+  },
+  "value": 0.6098358631134033,
+  "trial": 22,
+  "timestamp": "2026-03-19T16:37:51"
+}

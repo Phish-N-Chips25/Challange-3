@@ -1,0 +1,11 @@
+{
+  "value": 0.5866101384162903,
+  "params": {
+    "min_n": 2,
+    "max_n": 4,
+    "vector_size": 256,
+    "window": 10,
+    "min_count": 7,
+    "epochs": 10
+  }
+}

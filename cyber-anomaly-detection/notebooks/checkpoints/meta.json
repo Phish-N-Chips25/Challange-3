@@ -1,0 +1,76 @@
+{
+  "saved_at": "2026-03-19T22:17:35",
+  "n_benign": 1632903,
+  "n_malicious": 3447667,
+  "n_combined": 5080570,
+  "feature_dim": 371,
+  "cat_cols": [
+    "event_id",
+    "integrity_level",
+    "signed",
+    "sig_status",
+    "event_type",
+    "rule_name"
+  ],
+  "n_cat": 6,
+  "n_structural": 27,
+  "n_text_svd": 338,
+  "text_cols": [
+    "image",
+    "command_line",
+    "parent_image",
+    "parent_cmdline",
+    "target_object"
+  ],
+  "svd_components": {
+    "image": 26,
+    "command_line": 129,
+    "parent_image": 18,
+    "parent_cmdline": 36,
+    "target_object": 129
+  },
+  "optuna_best": {
+    "params": {
+      "max_features": 4096,
+      "ngram_max": 3,
+      "min_df": 2
+    },
+    "value": 0.6098358631134033,
+    "trial": 22,
+    "timestamp": "2026-03-19T16:37:51"
+  },
+  "quantile_n_quantiles": 10000,
+  "quantile_output_dist": "normal",
+  "viz_sizes_per_class": [
+    50000,
+    200000,
+    500000
+  ],
+  "tsne_cap": 50000,
+  "strategy_b": {
+    "w2v_best": {
+      "vector_size": 64,
+      "window": 4,
+      "min_count": 4,
+      "epochs": 10,
+      "sg": 0
+    },
+    "ft_best": {
+      "min_n": 2,
+      "max_n": 4,
+      "vector_size": 256,
+      "window": 10,
+      "min_count": 7,
+      "epochs": 10
+    },
+    "feature_dim": {
+      "w2v": 353,
+      "ft": 1313
+    },
+    "silhouette": {
+      "TF-IDF + SVD": 0.3093,
+      "Word2Vec": 0.2553,
+      "FastText": 0.5184
+    }
+  }
+}

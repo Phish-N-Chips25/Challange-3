@@ -1,0 +1,10 @@
+{
+  "value": 0.18380078673362732,
+  "params": {
+    "vector_size": 64,
+    "window": 4,
+    "min_count": 4,
+    "epochs": 10,
+    "sg": 0
+  }
+}
