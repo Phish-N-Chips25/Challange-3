@@ -73,6 +73,17 @@ DET_SIZE = (640, 640)
 ImagemEntrada = Union[str, os.PathLike[str], bytes, np.ndarray]
 
 
+def _ler_imagem_path(caminho: str) -> Optional[np.ndarray]:
+    """Lê imagem de disco de forma robusta para paths Unicode no Windows."""
+    try:
+        buffer = np.fromfile(caminho, dtype=np.uint8)
+    except OSError:
+        return None
+    if buffer.size == 0:
+        return None
+    return cv2.imdecode(buffer, cv2.IMREAD_COLOR)
+
+
 # ============================================================
 # INICIALIZAÇÃO LAZY
 # ============================================================
@@ -99,7 +110,7 @@ def carregar_imagem(entrada: ImagemEntrada) -> Optional[np.ndarray]:
 
     if isinstance(entrada, (str, os.PathLike)):
         caminho = os.fspath(entrada)
-        return cv2.imread(caminho)
+        return _ler_imagem_path(caminho)
 
     return None
 
@@ -140,7 +151,7 @@ def carregar_base_de_dados(pasta: ImagemEntrada = PASTA_BD_PADRAO, app: Optional
             if foto_path.suffix.lower() not in {".jpg", ".jpeg", ".png", ".bmp", ".webp"}:
                 continue
 
-            imagem = cv2.imread(str(foto_path))
+            imagem = _ler_imagem_path(str(foto_path))
             if imagem is None:
                 continue
 

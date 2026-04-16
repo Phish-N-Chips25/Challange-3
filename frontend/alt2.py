@@ -82,6 +82,17 @@ CLASS_NAMES = ['Arsenio', 'Cesar', 'Goncalo', 'Rui', 'Rynalde']
 ImagemEntrada = Union[str, os.PathLike[str], bytes, np.ndarray]
 
 
+def _ler_imagem_path(caminho: str) -> Optional[np.ndarray]:
+    """Lê imagem de disco de forma robusta para paths Unicode no Windows."""
+    try:
+        buffer = np.fromfile(caminho, dtype=np.uint8)
+    except OSError:
+        return None
+    if buffer.size == 0:
+        return None
+    return cv2.imdecode(buffer, cv2.IMREAD_COLOR)
+
+
 # ============================================================
 # ARQUITETURA DO MODELO CNN
 # ============================================================
@@ -172,7 +183,7 @@ def carregar_imagem(entrada: ImagemEntrada) -> Optional[np.ndarray]:
 
     if isinstance(entrada, (str, os.PathLike)):
         caminho = os.fspath(entrada)
-        return cv2.imread(caminho)
+        return _ler_imagem_path(caminho)
 
     return None
 
