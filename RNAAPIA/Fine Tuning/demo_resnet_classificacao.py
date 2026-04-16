@@ -15,7 +15,7 @@ import numpy as np
 # =========================
 # CONFIG
 # =========================
-CHECKPOINT = "best_resnet_org.pth"
+CHECKPOINT = "best_resnet_model.pth"
 IMAGE_SIZE = 192
 THRESHOLD = 0.60
 
