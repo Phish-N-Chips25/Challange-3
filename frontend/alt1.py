@@ -65,7 +65,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 # CONFIGURAÇÃO
 # ============================================================
 MODELO = "buffalo_sc"  # Trocar para buffalo_l se quiseres outra backbone
-THRESHOLD_PADRAO = 0.75
+THRESHOLD_PADRAO = 0.70
 # Usa caminho absoluto relativo a este ficheiro para evitar "base vazia" por CWD diferente.
 PASTA_BD_PADRAO = str((Path(__file__).resolve().parent / "pessoas_permitidas").resolve())
 DET_SIZE = (640, 640)
@@ -172,6 +172,28 @@ def carregar_base_de_dados(pasta: ImagemEntrada = PASTA_BD_PADRAO, app: Optional
     return base_de_dados
 
 
+@lru_cache(maxsize=4)
+def _carregar_base_de_dados_cacheada(pasta_resolvida: str):
+    """Cacheia a base por pasta para evitar recálculo de embeddings em cada pedido."""
+    return carregar_base_de_dados(pasta=pasta_resolvida, app=obter_modelo())
+
+
+def obter_base_de_dados_cacheada(pasta: ImagemEntrada = PASTA_BD_PADRAO):
+    """Devolve a base cacheada para a pasta indicada."""
+    return _carregar_base_de_dados_cacheada(str(Path(pasta).resolve()))
+
+
+def limpar_cache_base() -> None:
+    """Limpa o cache da base para forçar reconstrução no próximo uso."""
+    _carregar_base_de_dados_cacheada.cache_clear()
+
+
+def precarregar_recursos_alt1(pasta: ImagemEntrada = PASTA_BD_PADRAO) -> int:
+    """Pré-carrega modelo e base no arranque. Retorna número de pessoas em cache."""
+    obter_modelo()
+    return len(obter_base_de_dados_cacheada(pasta=pasta))
+
+
 # ============================================================
 # RECONHECIMENTO
 # ============================================================
@@ -220,6 +242,7 @@ def validar_pessoa_detalhes(
     app: Optional[FaceAnalysis] = None,
 ) -> dict[str, Any]:
     """Devolve resultado detalhado com decisão, score e threshold usado."""
+    app_injetada = app is not None
     app = app or obter_modelo()
     frame = carregar_imagem(imagem)
     if frame is None:
@@ -231,7 +254,12 @@ def validar_pessoa_detalhes(
             "reason": "imagem_invalida",
         }
 
-    base_de_dados = base_de_dados if base_de_dados is not None else carregar_base_de_dados(pasta_bd, app)
+    if base_de_dados is None:
+        # Quando o chamador não injeta base/app, usa cache para evitar recomputar embeddings.
+        if not app_injetada:
+            base_de_dados = obter_base_de_dados_cacheada(pasta_bd)
+        else:
+            base_de_dados = carregar_base_de_dados(pasta_bd, app)
     if not base_de_dados:
         return {
             "allowed": False,
@@ -261,4 +289,10 @@ def validar_pessoa_detalhes(
     }
 
 
-__all__ = ["validar_pessoa", "validar_pessoa_detalhes"]
+__all__ = [
+    "validar_pessoa",
+    "validar_pessoa_detalhes",
+    "obter_base_de_dados_cacheada",
+    "limpar_cache_base",
+    "precarregar_recursos_alt1",
+]

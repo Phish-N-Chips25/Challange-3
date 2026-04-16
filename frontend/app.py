@@ -15,13 +15,28 @@ from werkzeug.exceptions import HTTPException
 try:
     from frontend.servico_autenticacao import autenticar_detalhado, listar_alternativas
     from frontend.ui_registry import obter_alternativa_ui
+    from frontend.alt1 import precarregar_recursos_alt1
 except ModuleNotFoundError:
     from servico_autenticacao import autenticar_detalhado, listar_alternativas
     from ui_registry import obter_alternativa_ui
+    from alt1 import precarregar_recursos_alt1
 
 
 app = Flask(__name__)
 app.secret_key = "neongate-dev-secret-key-change-me"
+
+
+def _precarregar_alt1_no_arranque() -> None:
+    """Aquece recursos da Alt1 para reduzir latência do primeiro /auth."""
+    try:
+        total = precarregar_recursos_alt1()
+        print(f"[startup] Alt1 pre-carregada com {total} pessoa(s) na base cacheada.")
+    except Exception as exc:
+        # Falha de warmup não deve impedir o arranque da app.
+        print(f"[startup] Aviso: falha no pre-carregamento da Alt1: {exc}")
+
+
+_precarregar_alt1_no_arranque()
 
 
 HTML = """
