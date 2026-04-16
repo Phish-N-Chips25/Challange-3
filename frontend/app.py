@@ -7,7 +7,10 @@ autenticação e o resultado aparece no ecrã.
 
 from __future__ import annotations
 
+import traceback
+
 from flask import Flask, jsonify, redirect, render_template_string, request, session, url_for
+from werkzeug.exceptions import HTTPException
 
 try:
     from frontend.servico_autenticacao import autenticar_detalhado, listar_alternativas
@@ -291,7 +294,17 @@ HTML = """
 
       try {
         const response = await fetch('/auth', { method: 'POST', body: formData });
-        const data = await response.json();
+        const raw = await response.text();
+        let data;
+        try {
+          data = JSON.parse(raw);
+        } catch {
+          throw new Error('Resposta inválida do servidor (' + response.status + ')');
+        }
+
+        if (!response.ok) {
+          throw new Error(data.error || ('Erro HTTP ' + response.status));
+        }
 
         const scoreText = data.score === null || data.score === undefined
           ? 'N/A'
@@ -321,7 +334,8 @@ HTML = """
         }
       } catch (err) {
         statusBox.className = 'status bad';
-        statusBox.innerHTML = '<div class="label">Erro</div><div class="value">Falha ao autenticar</div>';
+        const msg = (err && err.message) ? err.message : 'Falha ao autenticar';
+        statusBox.innerHTML = '<div class="label">Erro</div><div class="value">' + msg + '</div>';
       } finally {
         authInFlight = false;
         authBtn.disabled = false;
@@ -439,20 +453,20 @@ def home():
 
 @app.post("/auth")
 def auth():
-    frame = request.files.get("frame")
-    if frame is None:
-        return jsonify({"allowed": False, "error": "frame ausente"}), 400
-
-    frame_bytes = frame.read()
-    if not frame_bytes:
-        return jsonify({"allowed": False, "error": "frame vazio"}), 400
-
-    alternativas_validas = set(listar_alternativas())
-    alternativa = (request.form.get("alternativa") or "").strip().lower()
-    if alternativa not in alternativas_validas:
-        alternativa = "alt1" if "alt1" in alternativas_validas else next(iter(alternativas_validas), "alt1")
-
     try:
+        frame = request.files.get("frame")
+        if frame is None:
+            return jsonify({"allowed": False, "error": "frame ausente"}), 400
+
+        frame_bytes = frame.read()
+        if not frame_bytes:
+            return jsonify({"allowed": False, "error": "frame vazio"}), 400
+
+        alternativas_validas = set(listar_alternativas())
+        alternativa = (request.form.get("alternativa") or "").strip().lower()
+        if alternativa not in alternativas_validas:
+            alternativa = "alt1" if "alt1" in alternativas_validas else next(iter(alternativas_validas), "alt1")
+
         resultado = autenticar_detalhado(frame_bytes, alternativa=alternativa)
     except ModuleNotFoundError as exc:
         return jsonify(
@@ -464,8 +478,20 @@ def auth():
                 "reason": "dependencia_ausente",
                 "error": f"Módulo em falta: {exc.name}",
             }
-        )
+        ), 500
+    except HTTPException as exc:
+        return jsonify(
+            {
+                "allowed": False,
+                "score": None,
+                "threshold": None,
+                "matched_name": None,
+                "reason": "erro_http",
+                "error": exc.description,
+            }
+        ), exc.code
     except Exception as exc:
+        traceback.print_exc()
         return jsonify(
             {
                 "allowed": False,
@@ -475,7 +501,7 @@ def auth():
                 "reason": "erro_interno",
                 "error": str(exc),
             }
-        )
+        ), 500
 
     if resultado.get("allowed"):
         nome = resultado.get("matched_name") or "Utilizador"
