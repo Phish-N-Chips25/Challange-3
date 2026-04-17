@@ -21,20 +21,20 @@ class AlternativaUI:
 _ALTERNATIVAS_UI: Dict[str, AlternativaUI] = {
     "alt1": AlternativaUI(
         codigo="alt1",
-        titulo="Alternativa 1",
-        descricao="Reconhecimento facial baseado na base de pessoas permitidas.",
+        titulo="Alt 1 · Embeddings",
+        descricao="Reconhecimento facial por comparação com a base de pessoas permitidas.",
         icone="👤",
     ),
     "alt2": AlternativaUI(
         codigo="alt2",
-        titulo="Alternativa 2",
-        descricao="Modelo FaceCNN afinado (best_cnn_model).",
+        titulo="Alt 2 · FaceCNN",
+        descricao="Classificação direta com o modelo FaceCNN afinado.",
         icone="🧠",
     ),
     "alt3": AlternativaUI(
         codigo="alt3",
-        titulo="Alternativa 3",
-        descricao="Modelo ResNet50 afinado (best_resnet_model).",
+        titulo="Alt 3 · ResNet50",
+        descricao="Classificação direta com o modelo ResNet50 afinado.",
         icone="🚀",
     ),
 }

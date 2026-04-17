@@ -50,10 +50,13 @@ EXEMPLO DE USO:
 
 from __future__ import annotations
 
+import hashlib
 import os
+import pickle
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Optional, Union
+import json
 
 import cv2
 import numpy as np
@@ -69,6 +72,10 @@ THRESHOLD_PADRAO = 0.70
 # Usa caminho absoluto relativo a este ficheiro para evitar "base vazia" por CWD diferente.
 PASTA_BD_PADRAO = str((Path(__file__).resolve().parent / "pessoas_permitidas").resolve())
 DET_SIZE = (640, 640)
+_CACHE_SCHEMA_VERSION = 1
+_CACHE_DIR = Path(__file__).resolve().parent / ".cache" / "alt1"
+_CACHE_FILE = _CACHE_DIR / "base_de_dados.pkl"
+_EXTENSOES_IMAGEM = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 ImagemEntrada = Union[str, os.PathLike[str], bytes, np.ndarray]
 
@@ -82,6 +89,85 @@ def _ler_imagem_path(caminho: str) -> Optional[np.ndarray]:
     if buffer.size == 0:
         return None
     return cv2.imdecode(buffer, cv2.IMREAD_COLOR)
+
+
+def _normalizar_pasta(pasta: ImagemEntrada) -> Path:
+    return Path(pasta).resolve()
+
+
+def _gerar_manifesto_fonte(pasta_path: Path) -> tuple[dict[str, Any], str]:
+    imagens: list[dict[str, Any]] = []
+    if pasta_path.exists():
+        for foto_path in sorted(pasta_path.rglob("*")):
+            if not foto_path.is_file() or foto_path.suffix.lower() not in _EXTENSOES_IMAGEM:
+                continue
+            try:
+                st = foto_path.stat()
+            except OSError:
+                continue
+            imagens.append(
+                {
+                    "relpath": foto_path.relative_to(pasta_path).as_posix(),
+                    "size": st.st_size,
+                    "mtime_ns": st.st_mtime_ns,
+                }
+            )
+
+    manifesto = {
+        "schema_version": _CACHE_SCHEMA_VERSION,
+        "modelo": MODELO,
+        "det_size": list(DET_SIZE),
+        "pasta_bd": str(pasta_path),
+        "imagens": imagens,
+    }
+    manifesto_serializado = json.dumps(manifesto, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    assinatura = hashlib.sha256(manifesto_serializado.encode("utf-8")).hexdigest()
+    return manifesto, assinatura
+
+
+def _carregar_cache_disco(manifesto_fonte: dict[str, Any], assinatura_fonte: str) -> Optional[dict[str, Any]]:
+    try:
+        with _CACHE_FILE.open("rb") as f:
+            payload = pickle.load(f)
+    except FileNotFoundError:
+        return None
+    except Exception:
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("schema_version") != _CACHE_SCHEMA_VERSION:
+        return None
+    if payload.get("assinatura_fonte") != assinatura_fonte:
+        return None
+    if payload.get("manifesto_fonte") != manifesto_fonte:
+        return None
+
+    base = payload.get("base_de_dados")
+    if not isinstance(base, dict):
+        return None
+    return base
+
+
+def _gravar_cache_disco(manifesto_fonte: dict[str, Any], assinatura_fonte: str, base_de_dados: dict[str, Any]) -> None:
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "schema_version": _CACHE_SCHEMA_VERSION,
+            "assinatura_fonte": assinatura_fonte,
+            "manifesto_fonte": manifesto_fonte,
+            "base_de_dados": base_de_dados,
+        }
+        temp_path = _CACHE_DIR / f"{_CACHE_FILE.stem}.{os.getpid()}.{os.urandom(4).hex()}.tmp"
+        temp_path.write_bytes(pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL))
+        os.replace(temp_path, _CACHE_FILE)
+    except Exception:
+        # A cache em disco é uma otimização; se falhar, o sistema continua a funcionar.
+        try:
+            if "temp_path" in locals() and temp_path.exists():
+                temp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 # ============================================================
@@ -138,7 +224,7 @@ def carregar_base_de_dados(pasta: ImagemEntrada = PASTA_BD_PADRAO, app: Optional
     app = app or obter_modelo()
     base_de_dados = {}
 
-    pasta_path = Path(pasta)
+    pasta_path = _normalizar_pasta(pasta)
     if not pasta_path.exists():
         return base_de_dados
 
@@ -148,7 +234,7 @@ def carregar_base_de_dados(pasta: ImagemEntrada = PASTA_BD_PADRAO, app: Optional
 
         embeddings = []
         for foto_path in pessoa_dir.iterdir():
-            if foto_path.suffix.lower() not in {".jpg", ".jpeg", ".png", ".bmp", ".webp"}:
+            if foto_path.suffix.lower() not in _EXTENSOES_IMAGEM:
                 continue
 
             imagem = _ler_imagem_path(str(foto_path))
@@ -171,21 +257,35 @@ def carregar_base_de_dados(pasta: ImagemEntrada = PASTA_BD_PADRAO, app: Optional
 
     return base_de_dados
 
-
 @lru_cache(maxsize=4)
-def _carregar_base_de_dados_cacheada(pasta_resolvida: str):
-    """Cacheia a base por pasta para evitar recálculo de embeddings em cada pedido."""
-    return carregar_base_de_dados(pasta=pasta_resolvida, app=obter_modelo())
+def _carregar_base_de_dados_cacheada(pasta_resolvida: str, assinatura_fonte: str, manifesto_serializado: str):
+    """Cacheia a base por pasta e por assinatura dos ficheiros fonte."""
+    manifesto_fonte = json.loads(manifesto_serializado)
+    base_disco = _carregar_cache_disco(manifesto_fonte, assinatura_fonte)
+    if base_disco is not None:
+        return base_disco
+
+    pasta_path = Path(pasta_resolvida)
+    base_de_dados = carregar_base_de_dados(pasta=pasta_path, app=obter_modelo())
+    _gravar_cache_disco(manifesto_fonte, assinatura_fonte, base_de_dados)
+    return base_de_dados
 
 
 def obter_base_de_dados_cacheada(pasta: ImagemEntrada = PASTA_BD_PADRAO):
     """Devolve a base cacheada para a pasta indicada."""
-    return _carregar_base_de_dados_cacheada(str(Path(pasta).resolve()))
+    pasta_path = _normalizar_pasta(pasta)
+    manifesto_fonte, assinatura_fonte = _gerar_manifesto_fonte(pasta_path)
+    manifesto_serializado = json.dumps(manifesto_fonte, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return _carregar_base_de_dados_cacheada(str(pasta_path), assinatura_fonte, manifesto_serializado)
 
 
 def limpar_cache_base() -> None:
     """Limpa o cache da base para forçar reconstrução no próximo uso."""
     _carregar_base_de_dados_cacheada.cache_clear()
+    try:
+        _CACHE_FILE.unlink(missing_ok=True)
+    except Exception:
+        pass
 
 
 def precarregar_recursos_alt1(pasta: ImagemEntrada = PASTA_BD_PADRAO) -> int:
