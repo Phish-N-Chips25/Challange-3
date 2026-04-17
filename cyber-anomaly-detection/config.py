@@ -53,8 +53,9 @@ SPLUNK_MALWARE_DIR = SPLUNK_DIR / "malware"
 # Processed / artifact output paths
 # ---------------------------------------------------------------------------
 PROCESSED_DIR  = PROJECT_ROOT / "data" / "processed"
-ATTACK_KB_DIR  = PROJECT_ROOT / "data" / "attack_kb"
-MODELS_DIR     = PROJECT_ROOT / "models"
+ATTACK_KB_DIR   = PROJECT_ROOT / "data" / "attack_kb"
+SIGMA_RULES_DIR = ATTACK_KB_DIR / "sigma_rules"
+MODELS_DIR      = PROJECT_ROOT / "models"
 MLFLOW_URI     = str(PROJECT_ROOT / "mlruns")
 
 for _d in [PROCESSED_DIR, ATTACK_KB_DIR, MODELS_DIR]:
@@ -140,13 +141,13 @@ SEQ_LR           = 1e-3
 # LLM / SLM pipeline settings
 # ---------------------------------------------------------------------------
 OLLAMA_BASE_URL   = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL      = os.getenv("OLLAMA_MODEL", "phi4:14b-q4_K_M")
-OLLAMA_TIMEOUT    = 120  # seconds
+OLLAMA_MODEL      = os.getenv("OLLAMA_MODEL", "qwen2.5:32b")
+OLLAMA_TIMEOUT    = 600  # seconds (32B models with CoT can take 3-5 min)
 
 CONTEXT_WINDOW_EVENTS = 32   # events per LLM prompt (sliding)
 
 CHROMA_PERSIST_DIR  = str(ATTACK_KB_DIR / "chroma_db")
-EMBEDDING_MODEL     = "all-MiniLM-L6-v2"  # sentence-transformers model
+EMBEDDING_MODEL     = "sentence-transformers/all-mpnet-base-v2"  # sentence-transformers model
 RAG_TOP_K           = 5
 
 JUDGE_PROVIDER      = os.getenv("JUDGE_PROVIDER", "anthropic")  # "anthropic" | "openai"
