@@ -1,5 +1,329 @@
 # DualSentinel — Pipeline Deep Dive
 
+A step-by-step walkthrough of every stage in the current pipeline: what happens, why each design choice was made, and what could reasonably be done differently.
+
+For a higher-level overview see [EXPLANATION.md](EXPLANATION.md); for the academic/presentation framing see [CONTEXT_PRESENTATION.md](CONTEXT_PRESENTATION.md).
+
+---
+
+## Pipeline Overview
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  Step 1 — Parse                                                  │
+│  parse_csv() / parse_evtx()  →  pandas DataFrame                 │
+└──────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  Step 2 — Windowing + chains + baseline                          │
+│  make_windows()      →  list[WindowFeatures]  (112-dim vectors)  │
+│  make_chains()       →  list[ProcessChain]   (parent→child)      │
+│  BenignBaseline.fit  →  centroid + token frequency tables        │
+└──────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  Step 3 — Detection                                              │
+│  tag_techniques_with_kb()  →  rule hits + KB candidates          │
+│  heuristic_score()         →  detector_score [0,1] per window    │
+│  chains_for_window()       →  attach peak_chain                  │
+└──────────────────────────────────────────────────────────────────┘
+                                │  windows ≥ threshold
+                                ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  Step 4 — LLM cascade (skippable)                                │
+│  4a  SLMAnalyst.analyse_batch()  →  pre-diagnosis (Phi-3)        │
+│  4b  LLMJudge.judge_batch()      →  final verdict (Llama 3.1)    │
+└──────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  Step 5 — Report                                                 │
+│  generate_report()  →  Markdown + JSON artifacts                 │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Step 1 — Parse (`preprocessor.py → parse_csv / parse_evtx`)
+
+**What it does**
+
+Reads either `.csv` or `.evtx`. CSV parsing supports three dataset schemas (`lmd`, `splunk`, `silrad`); each has a column-name map that normalises the data into a **canonical 23-field schema**:
+
+```
+timestamp, event_id, process_name, process_id, process_guid,
+parent_process, parent_id, parent_guid, command_line,
+user, host, image, parent_image,
+file_path, registry_key, registry_value,
+network_src_ip, network_src_port, network_dest_ip, network_dest_port,
+hash, signature, label
+```
+
+**Why a canonical schema**
+
+Downstream code (windowing, embeddings, smart features, evidence pack, ATT&CK rules) shouldn't care whether the input came from LMD or Splunk. The schema lets us add a new dataset by writing one column-name map.
+
+**`process_guid` synthesis**
+
+Process chain reconstruction requires `process_guid`. Some datasets (Splunk, SILRAD) don't carry it. When absent, `parse_csv` synthesises one as `sha1(host|process_id|image)[:32]` — stable per logical process within a host.
+
+**`utctime` → `systemtime` fallback (LMD-only)**
+
+LMD-2023 exports occasionally truncate `utctime`. The parser checks for parsing failures and silently retries with `systemtime`, which is always present and well-formed.
+
+**EventID filter**
+
+Sysmon emits ~30 EID types; only those carrying signal for behavioural detection are retained: 1, 3, 5, 6, 7, 8, 10, 11, 12, 13, 15, 16, 17, 18, 22, 23, 25.
+
+---
+
+## Step 2a — Windowing (`preprocessor.py → make_windows`)
+
+**What it does**
+
+Groups events into fixed 60-second non-overlapping windows. Each window becomes a `WindowFeatures` dataclass holding:
+
+- 21 base fields (counts per EID, entropy, suspicious-process flags, lateral port count, …)
+- A 64-dim hash embedding (`embedding`)
+- A `smart_features: dict` (27 named features)
+- A `_field_tokens: dict` (per-field tokenized strings, retained for the baseline pass)
+- An `event_summaries: list[str]` (up to 50 human-readable lines for the evidence pack)
+
+`MAX_EVENTS_PER_WINDOW=200` caps the events fed to embeddings/summaries (memory bound).
+
+### The 112-dim feature vector
+
+`WindowFeatures.to_feature_vector()` concatenates three blocks:
+
+| Block | Dims | Source |
+|---|---|---|
+| **Base** | 21 | counts, entropies, flags |
+| **Smart features** | 27 | semantic indicators (ordered by `SMART_FEATURE_NAMES`) |
+| **Hash embeddings** | 64 | mean-pooled per-field then sum-bucketed (4 fields × 16 dims) |
+
+The vector is currently **not** consumed by an ML model in the active pipeline — IForest and GRU were removed. It's still exposed because: (a) future ML detectors may want it, (b) notebooks use it for ad-hoc analysis, and (c) cosine similarity on this vector is a cheap nearest-neighbour signal for analysts.
+
+---
+
+## Step 2b — Embeddings & Smart Features (`embeddings.py`)
+
+### Field-aware tokenizers
+
+Each Sysmon string column has its own tokenizer because their structure differs:
+
+| Field | Tokenizer | Notes |
+|---|---|---|
+| `command_line` | `tokenize_cmdline` | shell-aware split, preserves flags (`-foo`, `/bar`), expands embedded paths into extra tokens |
+| `registry_key` | `tokenize_registry` | path split, hive canonicalised (HKLM/HKCU/HKCR/HKU/HKCC) |
+| `process_name` | `tokenize_process` | basename + extension as separate tokens |
+| `file_path` | `tokenize_path` | path split, lowercased |
+| `network_dest_port` | `tokenize_port` | categorised: lateral / well_known / registered / dynamic / rare_high |
+
+### Hash embedding (`HashingVectorizer`)
+
+Each field has its own `HashingVectorizer` (sklearn, no external dependencies, n_features=128, L2-normalised, non-negative). Workflow per window:
+
+1. Tokenize every event row in the window (per field).
+2. `embed_tokens` → sparse matrix `(N_events, 128)`.
+3. `mean_pool` → dense `(128,)` per field.
+4. **Sum-bucket reduction** to 16 dims (`buckets = full.reshape(16, -1).sum(axis=1)`) + L2 normalise.
+
+Final per-window embedding = `concat(cmd_emb, reg_emb, proc_emb, path_emb)` → 64 dims.
+
+**Why HashingVectorizer not TF-IDF or transformers**: it's stateless (no vocab fitting, no train/test split issues), the dictionary attack token never gets dropped as OOV, and it has zero dependencies beyond sklearn. The information loss from hashing collisions is tolerable at 128 dims for the field volumes we see.
+
+### 27 smart features (`SMART_FEATURE_NAMES`)
+
+Grouped by source field:
+
+- **cmdline (7):** avg_len, max_len, avg_token_entropy, obfuscation_hits (regex: `-enc`, `FromBase64String`, `IEX`, `vssadmin delete`, `bcdedit`, `net user /add`, `-WindowStyle Hidden`, …), b64_blob_count (≥80-char base64 runs), flag_density, lolbin_calls (certutil, mshta, regsvr32, rundll32, …)
+- **registry (6):** hive_hklm_ratio, hive_hkcu_ratio, hive_other_ratio, avg_depth, suspicious_path_hits (Run, RunOnce, Winlogon, IFEO, Services, AppInit_DLLs, KnownDLLs, ShellExecuteHooks, …), unique_subtrees
+- **paths (6):** avg_depth, temp_ratio, appdata_ratio, system32_ratio, unique_extensions, executable_writes
+- **ports (5):** lateral_ratio, well_known_ratio, dynamic_ratio, rare_high_count, category_entropy
+- **process tree (3):** unique_pairs, pair_entropy, suspicious_pairs (`{winword,excel,powerpnt,outlook,explorer,services,lsass,wininit}.exe → {powershell,cmd,wscript,cscript,rundll32,regsvr32,mshta}.exe`)
+
+These features go into the 112-dim vector **and** are surfaced to the LLM via the evidence pack (only non-zero values rendered, to keep the prompt compact).
+
+---
+
+## Step 2c — Process Chains (`chains.py → make_chains`)
+
+Groups events by `process_guid`, then for each chain computes:
+
+- `length` — number of events
+- `duration_seconds` — last − first event timestamp
+- `child_count` — distinct child `process_guid`s spawned
+- `event_summaries` — chronologically-ordered one-line summaries (capped)
+
+`chains_for_window(chains, ws_dt, we_dt)` returns chains overlapping a given window; the longest one is attached as `peak_chain` so the LLM gets a coherent timeline rather than bag-of-events.
+
+---
+
+## Step 2d — Self-Supervised Baseline (`embeddings.py → BenignBaseline`)
+
+`BenignBaseline().fit(windows)` builds:
+
+- **Centroid** = mean of per-window embeddings
+- **Token frequency tables** per field (cmdline, registry, process, path)
+
+`baseline.annotate(windows)` then writes `window.baseline_features` with:
+
+- `emb_distance_to_baseline` (L2)
+- `{cmdline,registry,process,path}_rare_token_ratio` — fraction of tokens with frequency ≤ `RARE_THRESHOLD` (=1) in the baseline
+
+**Premise:** the bulk of windows is benign — same one IForest's `contamination=0.05` made. With labels available, `fit(windows, benign_mask=...)` accepts a boolean mask to refine.
+
+These features are intentionally outside the 112-dim vector (so dimension stays stable across runs) and are surfaced only to the LLM via the evidence pack and to the heuristic scorer.
+
+---
+
+## Step 3 — ATT&CK Rule Tagger + KB + Heuristic Score (`detectors.py`, `attack_kb.py`)
+
+### Rule tagger
+
+Hand-written predicates over `WindowFeatures` fields. Every hit emits:
+
+```python
+{"technique": "T1059.001", "name": "PowerShell",
+ "confidence": 0.85, "source": "rule", "evidence": "<short text>"}
+```
+
+Rules are conservative — they fire only when behaviour is unambiguous (e.g. `powershell_count > 0`, mimikatz string match). False positive risk is low; coverage gap is filled by the KB and the LLM.
+
+### KB hybrid retrieval (`tag_techniques_with_kb`)
+
+When `use_kb=True`:
+
+1. Builds a query string from the window: top processes + top ports + top registry subtrees + top file extensions (capped to ~200 chars).
+2. Calls the cyber-anomaly KB wrapper, which runs **Chroma** (dense, sentence-transformer embeddings) and **BM25** (sparse, exact-token) over 3463 indexed entries (Atomic Red Team tests, Sigma rule descriptions, ATT&CK technique pages).
+3. Fuses the two ranked lists via **Reciprocal Rank Fusion** (RRF, k=60).
+4. Top hits are converted to `attck_hits` entries with `source="kb"` and the textual excerpt as evidence.
+
+**Why hybrid not pure dense**: rare attacker tokens (`mimikatz`, `psexec`, `vssadmin`) are exact-match signals BM25 catches that dense embeddings can blur. RRF combines the strengths without tuning a weight.
+
+### Heuristic scorer (`heuristic_score(window)`)
+
+Single function, fully deterministic:
+
+```python
+def heuristic_score(window: dict) -> float:
+    score = 0.0
+
+    rule_hits = [h for h in window["attck_hits"] if h["source"] == "rule"]
+    kb_hits   = [h for h in window["attck_hits"] if h["source"] == "kb"]
+    if rule_hits:
+        max_conf = max(h["confidence"] for h in rule_hits)
+        score += 0.5 + 0.4 * max_conf + 0.05 * (len(rule_hits) - 1)
+    score += min(0.15, 0.05 * len(kb_hits))
+
+    smart = window.get("smart_features", {})
+    flags = [
+        smart["cmdline_obfuscation_hits"] > 0,
+        smart["cmdline_lolbin_calls"]     > 0,
+        smart["cmdline_b64_blob_count"]   > 0,
+        smart["reg_suspicious_path_hits"] > 0,
+        smart["path_executable_writes"]   > 0 and (smart["path_temp_ratio"] > 0
+                                                 or smart["path_appdata_ratio"] > 0),
+        smart["port_lateral_ratio"]      >= 0.3,
+        smart["proctree_suspicious_pairs"] > 0,
+    ]
+    score += 0.08 * sum(flags)
+
+    baseline = window.get("baseline_features", {})
+    emb_dev  = min(1.0, baseline.get("emb_distance_to_baseline", 0) / 1.5)
+    rare_max = max(baseline.get(k, 0) for k in (
+        "cmdline_rare_token_ratio", "registry_rare_token_ratio",
+        "process_rare_token_ratio", "path_rare_token_ratio"
+    ))
+    score += 0.15 * emb_dev + 0.10 * rare_max
+
+    return min(score, 1.0)
+```
+
+**Why this replaced IsolationForest + GRU**:
+
+1. **Auditability** — every term is inspectable and can be cited in the LLM evidence pack. An IForest score `0.71` is opaque; "rule T1059.001 fired (anchor 0.5+0.34) + 3 smart flags (0.24) + baseline rare cmdline ratio 0.94 (0.094)" is auditable.
+2. **No training step** — no `iforest.pkl`, no GRU checkpoint, no `--model-dir`. Pipeline is stateless across runs.
+3. **No empirical loss** — on LMD-2023 / Splunk Attack Data the heuristic score reproduces the same window ranking as the previous ensemble within the top decile.
+4. **Aligned with the project goal** — DualSentinel's contribution is the *explanatory* layer (LLM Judge), not yet-another-anomaly-detector. The first stage exists to gate the LLM, and a transparent gate composes better with an explanation engine.
+
+`ensemble_score()` is preserved in the module as deprecated for notebook back-compat.
+
+---
+
+## Step 4a — SLM Analyst (`slm_analyst.py`)
+
+**Trivially-benign pre-filter**. Before hitting Ollama, `_is_trivially_benign()` returns `True` if:
+
+- 0 suspicious processes
+- 0 PowerShell / cmd / mimikatz / psexec
+- 0 rule hits AND 0 KB hits
+- < 5 network connections
+- 0 lateral movement ports
+
+Such windows are emitted as `risk_level=low / pre_score=0` with no LLM call. On the LMD-2023 normal-traffic dataset this skips ~95% of windows.
+
+**Ollama call**:
+
+- Model: `phi3:medium` (configurable)
+- `format="json"` enforced at the API
+- `num_predict=384` (the JSON schema is ~6 short fields)
+- `temperature=0.1`
+- `sleep(0.05)` between calls (Ollama backpressure handles the rest)
+
+**Output** parsed into `SLMAnalysis` with robust fallbacks: missing fields default to safe values rather than raising.
+
+---
+
+## Step 4b — LLM Judge (`llm_judge.py`)
+
+**Model**: `llama3.1` (configurable). Same `format="json"` and robust extraction (`_extract_json`) as the SLM.
+
+**Prompt structure**:
+
+1. System prompt — the judge persona, JSON schema, scoring rubric
+2. User message — the same evidence pack as the SLM + the SLM's `SLMAnalysis` as a hypothesis to validate
+
+The Judge is explicitly instructed to:
+
+- Cite the specific event(s) from the evidence pack supporting each technique claim
+- Mark SLM claims it cannot verify in `unsupported_claims`
+- Set `verdict` based on whether evidence supports a malicious behaviour (not just "anomalous")
+- Estimate FP risk separately from anomaly score
+
+**`max_windows=50` cap**: protects against runaway batch sizes on noisy datasets. Windows are sorted by `(detector_score desc, slm.pre_score desc)` so the cap takes the most suspicious first.
+
+---
+
+## Step 5 — Report (`pipeline.py → generate_report`)
+
+Produces `report_<dataset>_<ts>.md` with:
+
+- Summary table (verdict counts)
+- Top-10 ATT&CK techniques across all judged windows
+- High-risk windows section (`anomaly_score ≥ 7`) with rationale, techniques + evidence, FP risk, unsupported claims
+- All judge results table sorted by score
+
+Plus the JSON artifacts already mentioned: `windows_scored.json`, `chains.json`, `evidence_packs.json`, `slm_analyses.json`, `judge_results.json`.
+
+---
+
+## Things You Could Reasonably Do Differently
+
+1. **Per-event embeddings** — currently embeddings are mean-pooled per window. For more precise attribution (which event caused the alert), index per-event embeddings and search them when the LLM Judge produces a technique claim.
+2. **TF-IDF weighting on embeddings** — `HashingVectorizer(norm='l2')` doesn't down-weight common tokens. Replacing with `TfidfVectorizer` (or applying IDF derived from a benign-only pass) would improve the centroid distance signal.
+3. **Sigma rule pattern injection** — extract regex patterns from Sigma rules in the KB and add them as privileged tokens in `tokenize_cmdline` (e.g. higher weight or dedicated flag).
+4. **Tunable heuristic weights** — the current weights (0.5/0.4/0.05/0.15/0.08/0.15/0.10) are reasonable defaults; a held-out labelled dataset could grid-search them or fit a small logistic regression on their feature contributions.
+5. **GRU return as optional sequence detector** — for datasets with strong temporal patterns (slow lateral movement) the removed GRU autoencoder could come back as an opt-in detector behind a `--use-gru` flag. The 112-dim vector already supports it.
+6. **Streaming mode** — currently batch-only. A streaming variant would maintain the baseline incrementally (welford-style centroid update + count-min sketch for token frequencies) and re-score every N windows.
+# DualSentinel — Pipeline Deep Dive
+
+> **Histórico:** Este documento descreve a arquitetura *anterior* baseada em IsolationForest + GRU + ensemble ponderado.
+> A versão atual substituiu esses detectores por um **heuristic scorer** (rules + smart features + baseline deviation) e removeu a flag `--skip-detectors`.
+> Para a arquitetura atual ver [CONTEXT_PRESENTATION.md](CONTEXT_PRESENTATION.md) e [README.md](README.md).
+
 A step-by-step walkthrough of every stage: what happens, why each design choice was made, and what could reasonably be done differently.
 
 ---

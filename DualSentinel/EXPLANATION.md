@@ -2,6 +2,300 @@
 
 ## What is DualSentinel?
 
+DualSentinel is a two-stage anomaly detection pipeline for Windows Sysmon logs. Stage one is a **heuristic scorer** that fuses MITRE ATT&CK rule hits, hybrid KB retrieval, semantic smart features and self-supervised baseline deviation into a single auditable score. Stage two is a **two-LLM cascade** (Phi-3 Medium SLM Analyst → Llama 3.1 LLM Judge) that produces a grounded, evidence-anchored verdict for each high-risk window.
+
+Everything runs locally via Ollama — no external APIs, no telemetry leaving the machine.
+
+---
+
+## High-Level Architecture
+
+```
+Raw Logs (EVTX or CSV)
+        │
+        ▼
+┌─────────────────────────────────────────────────────────────┐
+│   Preprocessor                                              │
+│   parse → normalise to canonical 23-col schema → 60 s       │
+│   windows → 112-dim feature vector                          │
+│   (21 base + 27 smart + 64 hash embeddings)                 │
+└─────────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────────────────────────────────────┐
+│   Self-Supervised Baseline                                  │
+│   centroid + per-field token rarity tables                  │
+│   → emb_distance + cmdline/registry/process/path rare ratio │
+└─────────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────────────────────────────────────┐
+│   ATT&CK Rule Tagger + KB Hybrid Retrieval                  │
+│   • deterministic rules → confirmed technique hits          │
+│   • Chroma + BM25 (RRF) → candidate technique hits          │
+└─────────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────────────────────────────────────┐
+│   Heuristic Scorer  →  detector_score ∈ [0, 1]              │
+│   rule hits (anchor ≥0.5) + KB candidates (cap 0.15)        │
+│   + smart-feature flags (+0.08 each) + baseline (+0.25)     │
+└─────────────────────────────────────────────────────────────┘
+        │  windows with detector_score ≥ threshold
+        ▼
+┌────────────────────┐
+│   SLM Analyst      │  Phi-3 Medium (Ollama) — pre-diagnosis
+└────────────────────┘
+        │
+        ▼
+┌────────────────────┐
+│   LLM Judge        │  Llama 3.1 (Ollama) — validate, ATT&CK mapping, final score
+└────────────────────┘
+        │
+        ▼
+┌────────────────────┐
+│   Results          │  windows_scored.json + chains.json + evidence_packs.json
+│                    │  + slm_analyses.json + judge_results.json + report.md
+└────────────────────┘
+```
+
+---
+
+## Module-by-Module Breakdown
+
+### `preprocessor.py` — Parse, Normalise, Window, Feature-Engineer
+
+**Steps:**
+1. **Parse** — Reads `.evtx` (via `python-evtx`) or `.csv`. Supports three CSV schemas: `lmd`, `splunk`, `silrad`. Column names are normalised to a canonical 23-field schema (`timestamp`, `event_id`, `process_name`, `command_line`, `registry_key`, `network_dest_port`, `process_guid`, etc.). When the dataset doesn't carry `process_guid`, one is synthesised so process chains can still be reconstructed.
+2. **Timestamp fallback** — For LMD-2023 the parser tries `utctime` first; if it's truncated/corrupt it falls back to `systemtime`.
+3. **EventID filter** — Keeps Sysmon EIDs relevant to detection: 1, 3, 5, 6, 7, 8, 10, 11, 12, 13, 15, 16, 17, 18, 22, 23, 25.
+4. **Windowing** — Fixed 60-second non-overlapping windows via `make_windows()`.
+5. **Feature engineering** — Each window becomes a `WindowFeatures` dataclass; `to_feature_vector()` returns a **112-dim vector** = 21 base + 27 smart + 64 hash embeddings (see §Feature engineering below).
+6. **Per-field token capture** — Tokenized cmdlines, registry keys, processes and paths are retained on the window so the baseline pass can compute rarity scores without re-tokenizing.
+7. **Process chains** — `chains.py` groups events by `process_guid` to reconstruct parent→child timelines (length, duration, child count) — fed to the LLM as ordered evidence.
+
+#### Feature engineering (the 112-dim vector)
+
+| Block | Dims | Contents |
+|---|---|---|
+| **Base** | 21 | Counts per EID, suspicious-process count, lateral movement port count, Shannon entropies (event_id, process), boolean flags (mimikatz, psexec), per-EID counters (CreateRemoteThread, ProcessAccess, DriverLoad, FileDelete) |
+| **Smart features** | 27 | Semantic indicators — *not raw counts*: cmdline obfuscation regex hits, LOLBIN calls (certutil, mshta, regsvr32, …), base64 blobs, flag density, hive distribution (HKLM/HKCU), suspicious registry subpaths (Run, Winlogon, IFEO, …), path depth, temp/appdata/system32 ratio, executable writes, lateral port ratio, suspicious parent→child pairs (e.g. `winword.exe → powershell.exe`) |
+| **Field-aware embeddings** | 64 | `HashingVectorizer` (sklearn, no external dependencies) per field — command_line, registry_key, process_name, file_path. Custom tokenizers per field: paths split on `\\/`, hives canonicalised (HKLM/HKCU/HKCR/…), ports categorised (well_known/registered/dynamic/lateral/rare_high). Mean-pool per window + sum-bucket reduction to 16 dims each |
+
+#### Self-supervised baseline (`embeddings.py → BenignBaseline`)
+
+Computed as a separate post-windowing pass (does **not** participate in the 112-dim vector — keeps the IForest-friendly dimension stable for downstream consumers):
+
+- `emb_distance_to_baseline` — L2 distance from this window's embedding to the centroid of all windows
+- `{cmdline,registry,process,path}_rare_token_ratio` — fraction of tokens in this window seen ≤1 time in the baseline corpus
+
+The bulk-of-windows assumption is the same one IsolationForest used to make. When labels are available, `BenignBaseline.fit(windows, benign_mask=...)` accepts a mask to refine the baseline.
+
+---
+
+### `detectors.py` — ATT&CK Rule Tagger + KB Hybrid Retrieval + Heuristic Scorer
+
+#### Rule Tagger
+Deterministic rule functions mapping to ATT&CK techniques:
+
+| Technique | Condition |
+|---|---|
+| T1059.001 PowerShell | `powershell_count > 0` |
+| T1021.002 SMB Shares | lateral-movement ports + >2 network connections |
+| T1547.001 Registry Run Keys | `registry_modification_count > 3` |
+| T1003 Credential Dumping | mimikatz detected |
+| T1570 Lateral Tool Transfer | psexec detected |
+| T1486 Ransomware | >50 file creations + suspicious process |
+| T1071 C2 (App Layer) | >10 unique outbound IPs |
+
+Confirmed hits get `source="rule"` and a confidence in [0, 1].
+
+#### KB Hybrid Retrieval (`attack_kb.py`)
+Wrapper around the cyber-anomaly KB (3463 indexed entries from Atomic Red Team, Sigma rules, ATT&CK descriptions). Combines:
+
+- **Chroma** — dense semantic retrieval (sentence-transformer embeddings)
+- **BM25** — sparse lexical retrieval over the same corpus
+
+Results are fused via **Reciprocal Rank Fusion** (RRF, k=60). Top hits are returned with `source="kb"` and a normalised similarity score, plus the textual evidence that justified retrieval.
+
+> **"Confirmed vs candidate" separation** is deliberate: the LLM Judge can discount KB candidates with weak evidence without inflating false positives, while still being prompted to consider novel techniques the rule tagger doesn't cover.
+
+#### Heuristic Scorer (`heuristic_score(window)`)
+
+Fuses four signals into `detector_score ∈ [0, 1]`:
+
+| Signal | Weight | Notes |
+|---|---|---|
+| Rule hits | anchor ≥ 0.5 + 0.4×max(confidence) + 0.05 per extra hit | Audited deterministic signal |
+| KB candidates | +0.05 each, cap 0.15 | Retrieval ≠ confirmation |
+| Smart-feature flags (7) | +0.08 each | obfuscation, LOLBINs, base64 blobs, suspicious registry, exec write to temp/appdata, lateral port ratio ≥0.3, suspicious parent→child |
+| Baseline deviation | +0.15 × min(emb_dist/1.5, 1) + 0.10 × max rare ratio | Catches novel windows no rule fires on |
+
+**Why this replaced IsolationForest + GRU**: classical ML models add an opaque score the LLM Judge cannot audit. Each term in the heuristic score above is inspectable and can be cited in the evidence pack — aligned with the project's auditability goal. Empirical tests on LMD-2023 / Splunk Attack Data showed no meaningful gain from adding IForest/GRU on top of the signals already encoded here.
+
+`ensemble_score()` is kept in the module as deprecated, only for backwards compatibility with notebooks.
+
+---
+
+### `slm_analyst.py` — SLM First-Pass Triage
+
+**Model:** `phi3:medium` (configurable via `SLM_MODEL` in `.env`) via Ollama.
+
+1. **Trivially-benign pre-filter** — Before any LLM call, `_is_trivially_benign()` skips windows with zero suspicious processes, no PowerShell, no mimikatz/psexec, no rule hits, no KB hits, fewer than 5 network connections, and no lateral-movement ports. On normal-traffic datasets this avoids the bulk of Ollama calls.
+2. For remaining windows, an *evidence pack* (see `utils.py`) is assembled.
+3. The pack is sent to Phi-3 with `format="json"` enforced at the Ollama API level. Generation capped at 384 tokens (the JSON schema is small).
+4. Output parsed into `SLMAnalysis` (`pre_score`, `risk_level`, `suspected_techniques`, `risk_indicators`, `summary`, `needs_deep_analysis`).
+
+The pre-diagnosis becomes a **hypothesis** that the Judge then validates or refutes — this is the anti-hallucination strategy.
+
+---
+
+### `llm_judge.py` — LLM Final Validation
+
+**Model:** `llama3.1` (configurable via `JUDGE_MODEL` in `.env`) via Ollama.
+
+1. Receives the same evidence pack plus the `SLMAnalysis` hypothesis.
+2. Uses `format="json"`; robust extraction via `_extract_json()` (direct parse → strip markdown fences → scan for first `{...}` block).
+3. Produces `JudgeResult`:
+   - `anomaly_score` (0–10)
+   - `verdict` (normal / suspicious / malicious)
+   - `techniques` — ATT&CK objects with `technique_id`, `name`, `confidence`, `evidence`
+   - `rationale` — 2–3 sentence explanation
+   - `fp_risk` (low / medium / high)
+   - `unsupported_claims` — SLM claims the judge couldn't verify against the evidence
+
+---
+
+### `utils.py` — Shared Helpers
+
+- **`build_evidence_pack(window)`** — Assembles the structured plain-text pack injected into every LLM prompt. Sections rendered in order:
+  1. Aggregate stats (counts, entropies, flags)
+  2. **Smart features** (semantic signals) — only groups with non-zero values shown, keeping the prompt compact
+  3. **Baseline deviation** — embedding distance + per-field rare token ratios
+  4. Rule tagger hits (`confirmed`)
+  5. ATT&CK KB candidates (`retrieved, not confirmed`)
+  6. Peak process chain — longest overlapping chain, ordered events
+  7. Individual event samples — adaptive cap (15/30/50) based on window activity, command lines truncated at 120 chars to defuse prompt injection via log content
+- **`setup_logging(level)`**, **`save_json` / `load_json`**, **`precision_recall_f1`** — small shared utilities.
+
+---
+
+### `pipeline.py` — Orchestrator
+
+| Step | Action | Skippable |
+|---|---|---|
+| 1 | Parse input file (EVTX or CSV) | — |
+| 2 | Windowing (60 s) + process chain extraction + baseline fit | — |
+| 3 | ATT&CK rule tagging + KB retrieval + heuristic scoring | `--no-use-kb` disables retrieval |
+| 4a | SLM pre-diagnosis (Phi-3 Medium) | `--skip-judge` |
+| 4b | LLM Judge validation (Llama 3.1, up to 50 windows) | `--skip-judge` |
+| 5 | Markdown report generation | — |
+| 6 | Metrics (if `--evaluate`) | — |
+
+Results written to `results/YYYY-MM-DD_HH-MM/`:
+
+| File | Contents |
+|---|---|
+| `windows_scored.json` | All windows with detector_score, smart_features, baseline_features, attck_hits, peak_chain |
+| `chains.json` | All reconstructed process chains |
+| `evidence_packs.json` | Rendered evidence packs for windows above threshold (debug + audit) |
+| `slm_analyses.json` | Phi-3 pre-diagnoses |
+| `judge_results.json` | Llama 3.1 final verdicts |
+| `report_<dataset>_<ts>.md` | Human-readable Markdown report |
+
+---
+
+## CLI Reference
+
+```bash
+# Full pipeline
+python src/pipeline.py --input data/samples/sample_lmd.csv --dataset lmd
+
+# Skip the LLM stages (heuristic detection only)
+python src/pipeline.py --input data/samples/sample_lmd.csv --dataset lmd --skip-judge
+
+# Disable the KB hybrid retrieval (rules only)
+python src/pipeline.py --input data/samples/sample_lmd.csv --dataset lmd --no-use-kb
+
+# Override threshold without editing .env
+python src/pipeline.py --input data/samples/sample_lmd.csv --dataset lmd --threshold 0.4
+
+# Evaluate with metrics (requires label column in CSV)
+python src/pipeline.py --input data/samples/sample_lmd.csv --dataset lmd --evaluate
+
+# Files with spaces — wrap in quotes
+python src/pipeline.py --input "data/samples/LMD-2023 [1.75M Elements - Normal]checked.csv" --dataset lmd
+
+# Preprocess only
+python src/preprocessor.py --input data/samples/sample_lmd.csv --output results/windows.json
+```
+
+### All CLI options
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--input` | path | required | CSV or EVTX input file |
+| `--dataset` | str | `lmd` | CSV schema: `lmd`, `splunk`, `silrad` |
+| `--output-dir` | path | `results/YYYY-MM-DD_HH-MM` | Output directory |
+| `--model-dir` | path | — | Reserved for future use |
+| `--skip-judge` | flag | off | Skip SLM Analyst + LLM Judge |
+| `--threshold` | float | from `.env` | Override `ANOMALY_THRESHOLD` |
+| `--use-kb / --no-use-kb` | flag | on | Toggle KB hybrid retrieval (Chroma + BM25) |
+| `--evaluate` | flag | off | Compute metrics (requires `label` column) |
+| `--verbose` | flag | off | DEBUG-level logging |
+
+---
+
+## Configuration (`.env`)
+
+| Variable | Default | Description |
+|---|---|---|
+| `SLM_MODEL` | `phi3:medium` | Ollama model for SLM Analyst |
+| `JUDGE_MODEL` | `llama3.1` | Ollama model for LLM Judge |
+| `ANOMALY_THRESHOLD` | `0.6` | Minimum detector_score to escalate to LLMs |
+| `WINDOW_SIZE_SECONDS` | `60` | Time window size in seconds |
+| `MAX_EVENTS_PER_WINDOW` | `200` | Event cap per window |
+
+---
+
+## Supported Datasets
+
+| Dataset | Type | Notes |
+|---|---|---|
+| LMD-2023 | Sysmon Lateral Movement (1.75M events) | Primary evaluation; uses `systemtime` fallback if `utctime` is corrupt |
+| Splunk Attack Data | Sysmon + ATT&CK labels | Technique-level evaluation |
+| SILRAD | Sysmon ransomware + benign | Stress test |
+
+---
+
+## Design Decisions & Trade-offs
+
+| Decision | Rationale |
+|---|---|
+| Fixed 60-second windows | Simple, reproducible, maps naturally to attack dwell time |
+| Heuristic scorer instead of IsolationForest/GRU | Each term is auditable by the LLM Judge; opaque ML scores added no measurable gain over the encoded signals |
+| Self-supervised baseline (centroid + token rarity) | No labels needed; same bulk-of-windows premise IForest assumed; surfaces novel windows no rule fires on |
+| Field-aware tokenizers per Sysmon column | Cmdline, registry, paths and ports each have distinct structure; one-size tokenization loses signal |
+| 27 smart features beyond counts/entropy | LOLBIN regex, suspicious parent→child pairs, suspicious registry subtrees etc. encode security knowledge directly |
+| KB hybrid retrieval (Chroma + BM25, RRF) | Combines dense semantic + exact-token matching; no external API dependency |
+| "Confirmed vs candidate" hit separation | Lets the Judge weigh deterministic rules higher than retrieved candidates |
+| Two-LLM cascade (SLM → Judge) | Reduces hallucinations; the Judge has a hypothesis to verify, not a blank slate |
+| `format="json"` in Ollama calls | Constrained decoding eliminates JSON parse failures |
+| `_extract_json()` fallback chain | Handles markdown fences and stray prose from models that ignore `format` |
+| All LLMs run locally (Ollama) | No data leaves the machine; reproducible offline; aligned with security-isolated environments |
+| Trivially-benign pre-filter in SLM | Skips Ollama entirely for windows with no threat signals; critical for large normal-traffic datasets |
+| `num_predict=384` in SLM | 6-field JSON response needs far fewer than 1024 tokens; ~40% faster generation |
+| Adaptive evidence pack sample cap (15/30/50) | Low-activity windows get fewer sample lines; reduces prefill tokens without losing context |
+| Process chains as ordered timelines | Gives the LLM cause-effect ordering instead of bag-of-events |
+| `systemtime` fallback in LMD parser | LMD-2023 exports have truncated `utctime`; `systemtime` is always complete |
+# DualSentinel — Technical Explanation
+
+> **Histórico:** Este documento descreve a arquitetura *anterior* baseada em IsolationForest + GRU + ensemble ponderado.
+> A versão atual substituiu esses detectores por um **heuristic scorer** (rules + smart features + baseline deviation) e removeu a flag `--skip-detectors`.
+> Para a arquitetura atual ver [CONTEXT_PRESENTATION.md](CONTEXT_PRESENTATION.md) e [README.md](README.md).
+
+## What is DualSentinel?
+
 DualSentinel is a two-stage log anomaly detection pipeline for Windows Sysmon/ETW event logs. It combines classical machine learning detectors (the "first sentinel") with local LLM-based analysis and judgement (the "second sentinel") to identify threats and map them to the MITRE ATT&CK framework.
 
 The name reflects the dual-layer architecture: fast statistical detectors act as a first gate, and language models act as a second, reasoning gate.

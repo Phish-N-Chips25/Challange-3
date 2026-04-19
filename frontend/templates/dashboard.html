@@ -28,7 +28,14 @@
     }
     .brand { display:flex; align-items:center; gap:10px; font-weight:700; font-size:1rem; }
     .dot { width:10px; height:10px; border-radius:999px; background:var(--accent); box-shadow:0 0 12px rgba(125,211,252,0.9); }
-    .topbar-right { display:flex; align-items:center; gap:16px; font-size:.88rem; color:var(--muted); }
+    .topbar-right { display:flex; align-items:center; gap:14px; font-size:.88rem; color:var(--muted); }
+    .nav-link {
+      padding:7px 14px; border-radius:10px; border:1px solid rgba(103,232,249,0.18);
+      background:rgba(2,6,23,0.45); color:#cbd5e1; font-size:.84rem; text-decoration:none;
+      transition:border-color 150ms, background 150ms;
+    }
+    .nav-link:hover { border-color:rgba(103,232,249,0.4); background:rgba(15,23,42,0.85); }
+    .nav-link.active { color:#020617; background:linear-gradient(90deg,#7dd3fc,#c084fc); border-color:transparent; font-weight:700; }
     .user-chip {
       display:flex; align-items:center; gap:8px; padding:6px 12px; border-radius:999px;
       border:1px solid rgba(103,232,249,0.2); background:rgba(2,6,23,0.4); color:var(--text); font-size:.86rem;
@@ -185,6 +192,16 @@
     @keyframes ds2pulse { 0%,100%{opacity:1} 50%{opacity:.65} }
     .ds2-progress-fill.done { animation:none; width:100%; background:linear-gradient(90deg,#4ade80,#22c55e); }
     .ds2-progress-fill.error { animation:none; width:100%; background:#f87171; }
+    .ds2-mini-row { display:flex; gap:6px; }
+    .ds2-mini-row .ds2-row { flex:1; }
+    .ds2-input { width:100%; padding:7px 10px; border-radius:8px; border:1px solid var(--line); background:rgba(2,6,23,0.7); color:var(--text); font-size:.82rem; outline:none; font-family:inherit; }
+    .ds2-input:focus { border-color:rgba(103,232,249,0.4); }
+    .ds2-filter-chip { display:inline-flex; align-items:center; gap:5px; padding:4px 10px; border-radius:999px; cursor:pointer; font-size:.74rem; border:1px solid var(--line); background:rgba(2,6,23,0.4); color:var(--muted); }
+    .ds2-filter-chip.active { color:#020617; background:linear-gradient(90deg,#7dd3fc,#c084fc); border-color:transparent; font-weight:700; }
+    .ds2-stat-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(110px, 1fr)); gap:8px; }
+    .ds2-prov-grid { display:grid; grid-template-columns:auto 1fr; gap:6px 12px; font-size:.78rem; align-items:baseline; }
+    .ds2-prov-key { color:var(--muted); }
+    .ds2-prov-val { color:#cbd5e1; font-family:monospace; word-break:break-all; }
 
     /* verdict badges */
     .verdict-malicious   { background:rgba(248,113,113,0.18); color:#fca5a5; border:1px solid rgba(248,113,113,0.3); }
@@ -206,8 +223,10 @@
 </head>
 <body>
   <nav class="topbar">
-    <div class="brand"><span class="dot"></span> Phish'N'Chips &nbsp;·&nbsp; SOC Dashboard</div>
+    <div class="brand"><span class="dot"></span> Phish'N'Chips &nbsp;·&nbsp; Real-time SOC</div>
     <div class="topbar-right">
+      <a href="{{ url_for('dashboard') }}" class="nav-link active">Real-time SOC</a>
+      <a href="{{ url_for('dualsentinel_page') }}" class="nav-link">DualSentinel</a>
       <span class="user-chip">🔐 {{ nome }}</span>
       <form method="post" action="{{ url_for('logout') }}" style="margin:0">
         <button type="submit" class="logout-btn">Terminar sessão</button>
@@ -232,7 +251,6 @@
         <select class="source-select" id="sourceSelect">
           <option value="OTRF Atomic Red Team">OTRF Atomic</option>
           <option value="Splunk Attack Range">Splunk</option>
-          <option value="DualSentinel">DualSentinel</option>
         </select>
       </div>
       <div class="chain-list" id="chainList">
@@ -258,9 +276,10 @@
     let activeWindowIdx  = null;  // index into the windows array for the active chain
 
     // DualSentinel state
-    let ds2Results   = null;   // { windows, judge_results }
+    let ds2Results   = null;   // { windows, judge_results, metrics, telemetry, manifest }
     let ds2RunId     = null;
     let ds2PollTimer = null;
+    let ds2Filter    = 'all';   // all | malicious | suspicious | normal
 
     function esc(s) {
       return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -283,7 +302,6 @@
     }
 
     async function loadChains(source) {
-      if (source === 'DualSentinel') { loadDualSentinel(); return; }
       chainList.innerHTML = '<div class="spinner-row"><div class="spinner"></div>A carregar chains...</div>';
       emptyState.style.display = '';
       detailContent.style.display = 'none';
@@ -571,9 +589,27 @@
               <option value="">Todas (lento)</option>
             </select>
           </div>
+          <div class="ds2-mini-row">
+            <div class="ds2-row">
+              <span class="ds2-label">Max LLM calls</span>
+              <input type="number" class="ds2-input" id="ds2MaxLlm" placeholder="sem limite" min="1" step="1">
+            </div>
+            <div class="ds2-row">
+              <span class="ds2-label">Seed</span>
+              <input type="number" class="ds2-input" id="ds2Seed" value="42" min="0" step="1">
+            </div>
+          </div>
           <label class="ds2-toggle-row">
             <input type="checkbox" id="ds2SkipJudge">
             Saltar LLM Judge (mais rápido)
+          </label>
+          <label class="ds2-toggle-row">
+            <input type="checkbox" id="ds2UseKb" checked>
+            Usar ATT&amp;CK KB (retrieval RAG)
+          </label>
+          <label class="ds2-toggle-row">
+            <input type="checkbox" id="ds2Evaluate">
+            Calcular métricas (--evaluate)
           </label>
           <button class="ds2-run-btn" id="ds2RunBtn" onclick="startDs2Run()">▶ Analisar</button>
           <div class="ds2-status" id="ds2Status">Seleciona um ficheiro e clica em Analisar.</div>
@@ -611,11 +647,16 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            file:       fileEl.value,
-            dataset:    datasetEl.value,
-            threshold:  parseFloat(thresholdEl.value),
-            skip_judge: skipJudgeEl.checked,
-            max_rows:   maxRowsEl.value ? parseInt(maxRowsEl.value) : null,
+            file:          fileEl.value,
+            dataset:       datasetEl.value,
+            threshold:     parseFloat(thresholdEl.value),
+            skip_judge:    skipJudgeEl.checked,
+            max_rows:      maxRowsEl.value ? parseInt(maxRowsEl.value) : null,
+            max_llm_calls: (document.getElementById('ds2MaxLlm').value || '').trim()
+                             ? parseInt(document.getElementById('ds2MaxLlm').value) : null,
+            use_kb:        document.getElementById('ds2UseKb').checked,
+            evaluate:      document.getElementById('ds2Evaluate').checked,
+            seed:          parseInt(document.getElementById('ds2Seed').value || '42'),
           }),
         }).then(r => r.json().then(j => { if (!r.ok) throw new Error(j.error || r.statusText); return j; }));
 
@@ -686,6 +727,7 @@
         if (!flagged.length) {
           const panel = document.getElementById('ds2Status');
           if (panel) panel.textContent = 'Nenhuma anomalia detectada acima do threshold.';
+          renderDs2Overview(data);
           return;
         }
 
@@ -698,6 +740,7 @@
             : 'Sem técnica identificada',
           sample_images: [`${w.window_start} → ${w.window_end}`],
           event_count:  parseInt(w.event_count || 0),
+          _verdict:     'detector',
           _window:      w,
           _judge:       null,
         }));
@@ -716,17 +759,42 @@
               ground_truth: gt,
               sample_images: [`${jr.window_start} → ${jr.window_end}`],
               event_count:  parseInt((winMap[jr.window_start] || {}).event_count || 0),
+              _verdict:     (jr.verdict || 'normal').toLowerCase(),
               _window:      winMap[jr.window_start] || null,
               _judge:       jr,
             };
           });
       }
 
-      const chainListEl = document.getElementById('chainList');
-      const panelHead = chainListEl.previousElementSibling;
+      renderDs2Overview(data);
+      renderDs2List();
+    }
 
-      // Replace chainList content (keep panel head)
-      chainListEl.innerHTML = allChains.map((c, i) => `
+    function renderDs2List() {
+      const chainListEl = document.getElementById('chainList');
+      const counts = { all: allChains.length, malicious: 0, suspicious: 0, normal: 0 };
+      allChains.forEach(c => {
+        if (counts[c._verdict] !== undefined) counts[c._verdict]++;
+      });
+
+      const filterChip = (key, label) =>
+        `<span class="ds2-filter-chip ${ds2Filter === key ? 'active' : ''}" onclick="setDs2Filter('${key}')">${label} · ${counts[key] || 0}</span>`;
+
+      const filtersHtml = `
+        <div style="padding:8px;display:flex;flex-wrap:wrap;gap:5px;border-bottom:1px solid var(--line)">
+          ${filterChip('all', 'Todas')}
+          ${filterChip('malicious', 'Malicious')}
+          ${filterChip('suspicious', 'Suspicious')}
+          ${filterChip('normal', 'Normal')}
+        </div>`;
+
+      const visible = ds2Filter === 'all'
+        ? allChains
+        : allChains.filter(c => c._verdict === ds2Filter);
+
+      const itemsHtml = visible.map((c) => {
+        const i = allChains.indexOf(c);
+        return `
         <div class="chain-item" id="ci-${i}" onclick="selectDs2Chain(${i})">
           <div class="chain-header">
             <span class="chain-gt">${esc(c.ground_truth)}</span>
@@ -734,7 +802,135 @@
           </div>
           <div class="chain-meta">${c.event_count} events${c._judge ? ' &nbsp;·&nbsp; ' + esc(c._judge.verdict) : ''}</div>
           <div class="chain-images">${c.sample_images.map(esc).join(' · ')}</div>
-        </div>`).join('') || '<div class="spinner-row">Nenhum resultado.</div>';
+        </div>`;
+      }).join('') || '<div class="spinner-row">Nenhum resultado para este filtro.</div>';
+
+      chainListEl.innerHTML = filtersHtml + itemsHtml;
+    }
+
+    function setDs2Filter(f) {
+      ds2Filter = f;
+      renderDs2List();
+    }
+
+    function renderDs2Overview(data) {
+      // Render an aggregate summary in the detail panel so the user sees something
+      // *before* selecting an individual window: counts, metrics, manifest, telemetry.
+      const judgeResults = data.judge_results || [];
+      const windows      = data.windows      || [];
+      const metrics      = data.metrics  || null;
+      const telemetry    = data.telemetry || null;
+      const manifest     = data.manifest  || null;
+
+      const verdictCounts = { malicious: 0, suspicious: 0, normal: 0 };
+      judgeResults.forEach(jr => {
+        const v = (jr.verdict || '').toLowerCase();
+        if (verdictCounts[v] !== undefined) verdictCounts[v]++;
+      });
+      const flagged = windows.filter(w => parseFloat(w.detector_score || 0) >= 0.6).length;
+
+      // ── Metrics card (only if --evaluate was on) ──
+      let metricsHtml = '';
+      if (metrics && metrics.detector) {
+        const fmt = (v) => v == null ? 'n/a' : Number(v).toFixed(4);
+        const det = metrics.detector;
+        const j   = metrics.judge;
+        const tx  = metrics.techniques;
+        metricsHtml = `
+          <div class="section-card">
+            <h3>Métricas <span style="font-size:.72rem;color:var(--muted)">${metrics.n_labelled} janelas rotuladas · thr=${metrics.threshold}</span></h3>
+            <table class="event-table">
+              <thead><tr><th></th><th>P</th><th>R</th><th>F1</th><th>ROC-AUC</th><th>PR-AUC</th><th>TP/FP/FN/TN</th></tr></thead>
+              <tbody>
+                <tr><td><strong>Detector</strong></td>
+                  <td>${fmt(det.precision)}</td><td>${fmt(det.recall)}</td><td>${fmt(det.f1)}</td>
+                  <td>${fmt(det.roc_auc)}</td><td>${fmt(det.pr_auc)}</td>
+                  <td class="mono">${det.confusion.tp}/${det.confusion.fp}/${det.confusion.fn}/${det.confusion.tn}</td>
+                </tr>
+                ${j ? `<tr><td><strong>Judge</strong></td>
+                  <td>${fmt(j.precision)}</td><td>${fmt(j.recall)}</td><td>${fmt(j.f1)}</td>
+                  <td>${fmt(j.roc_auc)}</td><td>${fmt(j.pr_auc)}</td>
+                  <td class="mono">${j.confusion.tp}/${j.confusion.fp}/${j.confusion.fn}/${j.confusion.tn}</td>
+                </tr>` : ''}
+              </tbody>
+            </table>
+            ${tx ? `<div style="margin-top:8px;font-size:.78rem;color:var(--muted)">
+              Técnicas multi-label (n=${tx.n_labels}) —
+              micro F1 <strong style="color:#67e8f9">${fmt(tx.micro.f1)}</strong>,
+              macro F1 <strong style="color:#67e8f9">${fmt(tx.macro.f1)}</strong>
+            </div>` : ''}
+          </div>`;
+      }
+
+      // ── Telemetry card ──
+      let teleHtml = '';
+      if (telemetry && telemetry.summary) {
+        const s = telemetry.summary;
+        const stages = Object.entries(s.by_stage || {});
+        teleHtml = `
+          <div class="section-card">
+            <h3>Telemetria LLM <span style="font-size:.72rem;color:var(--muted)">wall=${(s.wall_time_s||0).toFixed(1)}s · ${s.total_calls} chamadas</span></h3>
+            <table class="event-table">
+              <thead><tr><th>Stage</th><th>Calls</th><th>OK</th><th>Mean (s)</th><th>Total (s)</th><th>Prompt tok</th><th>Compl. tok</th></tr></thead>
+              <tbody>${stages.map(([name, st]) => `
+                <tr><td><strong>${esc(name)}</strong></td>
+                  <td>${st.calls}</td><td>${st.ok}</td>
+                  <td class="mono">${(st.mean_duration_s||0).toFixed(2)}</td>
+                  <td class="mono">${(st.total_duration_s||0).toFixed(2)}</td>
+                  <td class="mono">${st.prompt_tokens}</td>
+                  <td class="mono">${st.completion_tokens}</td>
+                </tr>`).join('')}</tbody>
+            </table>
+          </div>`;
+      }
+
+      // ── Provenance card ──
+      let provHtml = '';
+      if (manifest) {
+        const i = manifest.input || {};
+        const c = manifest.config || {};
+        const sha = (i.sha256 || '').slice(0, 16);
+        const git = (manifest.git_commit || '').slice(0, 8);
+        provHtml = `
+          <div class="section-card">
+            <h3>Provenance <span style="font-size:.72rem;color:var(--muted)">run_manifest.json</span></h3>
+            <div class="ds2-prov-grid">
+              <span class="ds2-prov-key">Input</span><span class="ds2-prov-val">${esc(i.path || '—')}</span>
+              <span class="ds2-prov-key">SHA-256</span><span class="ds2-prov-val">${esc(sha)}…</span>
+              <span class="ds2-prov-key">Dataset</span><span class="ds2-prov-val">${esc(i.dataset || '—')}</span>
+              <span class="ds2-prov-key">Threshold</span><span class="ds2-prov-val">${c.anomaly_threshold}</span>
+              <span class="ds2-prov-key">Seed</span><span class="ds2-prov-val">${c.seed}</span>
+              <span class="ds2-prov-key">SLM</span><span class="ds2-prov-val">${esc(c.slm_model || '—')}</span>
+              <span class="ds2-prov-key">Judge</span><span class="ds2-prov-val">${esc(c.judge_model || '—')}</span>
+              <span class="ds2-prov-key">Use KB</span><span class="ds2-prov-val">${c.use_kb}</span>
+              <span class="ds2-prov-key">Max LLM calls</span><span class="ds2-prov-val">${c.max_llm_calls ?? '∞'}</span>
+              <span class="ds2-prov-key">Git commit</span><span class="ds2-prov-val">${esc(git || '—')}</span>
+              <span class="ds2-prov-key">Python</span><span class="ds2-prov-val">${esc(manifest.python || '—')}</span>
+            </div>
+          </div>`;
+      }
+
+      emptyState.style.display = 'none';
+      detailContent.style.display = '';
+      detailContent.innerHTML = `
+        <div class="section-card">
+          <h3>DualSentinel · sumário da execução</h3>
+          <div class="ds2-stat-grid">
+            <div class="stat-box"><div class="stat-label">Janelas</div><div class="stat-value">${windows.length}</div></div>
+            <div class="stat-box"><div class="stat-label">Acima do threshold</div><div class="stat-value">${flagged}</div></div>
+            <div class="stat-box"><div class="stat-label">Judged</div><div class="stat-value">${judgeResults.length}</div></div>
+            <div class="stat-box"><div class="stat-label">Malicious</div><div class="stat-value" style="color:#fca5a5">${verdictCounts.malicious}</div></div>
+            <div class="stat-box"><div class="stat-label">Suspicious</div><div class="stat-value" style="color:#fde68a">${verdictCounts.suspicious}</div></div>
+            <div class="stat-box"><div class="stat-label">Normal</div><div class="stat-value" style="color:#86efac">${verdictCounts.normal}</div></div>
+          </div>
+          <div style="margin-top:8px;font-size:.74rem;color:var(--muted)">${esc(data.output_dir || '')}</div>
+        </div>
+        ${metricsHtml}
+        ${teleHtml}
+        ${provHtml}
+        <div class="section-card" style="text-align:center;color:var(--muted);font-size:.84rem">
+          ← Seleciona uma janela na lista para ver o detalhe.
+        </div>`;
     }
 
     function selectDs2Chain(idx) {
@@ -829,8 +1025,8 @@
           <div style="margin-top:10px;font-size:.8rem;color:var(--muted)">${esc(windowRange)}</div>
           ${win ? `<div class="eid-row" style="margin-top:8px">
             <span class="eid-chip">Events: ${parseInt(win.event_count || 0)}</span>
-            <span class="eid-chip">IForest: ${parseFloat(win.if_score || 0).toFixed(3)}</span>
             <span class="eid-chip">Detector: ${parseFloat(win.detector_score || 0).toFixed(3)}</span>
+            ${win.baseline_features ? `<span class="eid-chip">Emb dist: ${parseFloat(win.baseline_features.embedding_distance || 0).toFixed(3)}</span>` : ''}
           </div>` : ''}
         </div>
 

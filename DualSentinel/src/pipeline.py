@@ -4,10 +4,10 @@ Orquestrador principal do Challenge 3 MEIA.
 
 Fluxo:
   1. Parse + windowing (preprocessor)
-  2. Feature extraction
-  3. IsolationForest + GRU scoring (detectors)
-  4. ATT&CK rule tagging
-  5. LLM judge nas janelas de alto risco
+  2. Feature extraction + baseline self-supervised
+  3. ATT&CK rule tagging + KB retrieval híbrido
+  4. Heuristic scoring (rules + smart features + baseline deviation)
+  5. SLM Analyst (Phi-3) + LLM Judge (Llama 3.1) nas janelas de alto risco
   6. Geração de relatório Markdown
 """
 
@@ -30,10 +30,11 @@ from rich.table import Table
 load_dotenv()
 
 from preprocessor import make_windows, parse_csv, parse_evtx, WindowFeatures
-from detectors import IForestDetector, GRUDetector, tag_techniques_with_kb, ensemble_score
+from detectors import tag_techniques_with_kb, heuristic_score
 from chains import make_chains, chains_for_window
 from llm_judge import LLMJudge, JudgeResult
 from slm_analyst import SLMAnalyst
+from provenance import set_global_seed, write_run_manifest, TELEMETRY
 console = Console()
 logger = logging.getLogger(__name__)
 
@@ -146,17 +147,19 @@ def run_pipeline(
     output_dir: Optional[Path] = None,
     model_dir: Optional[Path] = None,
     skip_judge: bool = False,
-    skip_detectors: bool = False,
     threshold: Optional[float] = None,
     evaluate: bool = False,
     max_rows: Optional[int] = None,
     use_kb: bool = True,
+    max_llm_calls: Optional[int] = None,
+    seed: int = 42,
 ) -> dict:
     """
     Pipeline completo. Devolve dict com resultados e caminhos de output.
 
     threshold: sobrepõe ANOMALY_THRESHOLD do .env quando fornecido.
     """
+    set_global_seed(seed)
     effective_threshold = threshold if threshold is not None else ANOMALY_THRESHOLD
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M")
     if output_dir is None:
@@ -186,52 +189,16 @@ def run_pipeline(
     chains = make_chains(df, min_length=2)
     console.print(f"  → {len(windows)} janelas, {len(chains)} process chains")
 
-    # Feature matrix (needed for GRU/IForest when not skipped)
-    X = np.array([w.to_feature_vector() for w in windows])
+    # Self-supervised benign baseline (centroid + per-field token rarity).
+    # Bulk-of-windows assumption (most windows are benign); the resulting
+    # signals feed both the heuristic scorer and the LLM evidence pack.
+    from embeddings import BenignBaseline
+    baseline = BenignBaseline().fit(windows)
+    baseline.annotate(windows)
 
-    # ── 3. IsolationForest ────────────────────
-    if_scores = np.zeros(len(windows))
-    if skip_detectors:
-        console.print("[dim]Step 3: IsolationForest skipped (--skip-detectors)[/dim]")
-    else:
-        console.print("[bold]Step 3:[/bold] IsolationForest scoring...")
-        model_path = (model_dir or output_dir) / "iforest.pkl"
-        if model_dir and (model_dir / "iforest.pkl").exists():
-            iforest = IForestDetector.load(model_dir / "iforest.pkl")
-            console.print("  → Modelo carregado de disco")
-        else:
-            iforest = IForestDetector()
-            iforest.fit(X)
-            iforest.save(model_path)
-        if_scores = iforest.score(X)
-
-    # ── 4. GRU (opcional, só se há janelas suficientes) ──
-    gru_scores = np.zeros(len(windows))
-    seq_len = 10
-    if skip_detectors:
-        console.print("[dim]Step 4: GRU skipped (--skip-detectors)[/dim]")
-    elif len(windows) >= seq_len + 1:
-        console.print("[bold]Step 4:[/bold] GRU sequence scoring...")
-        gru = GRUDetector(feature_dim=X.shape[1], seq_len=seq_len)
-        sequences = np.array([X[i:i+seq_len] for i in range(len(X) - seq_len)])
-        gru.fit(sequences)
-        gru_raw = gru.score(sequences)
-        # Normalizar e alinhar com janelas (padding do início)
-        if gru_raw.max() > 0:
-            gru_norm = gru_raw / gru_raw.max()
-        else:
-            gru_norm = gru_raw
-        gru_scores[seq_len:] = gru_norm
-    else:
-        console.print("[dim]Step 4: GRU skipped (janelas insuficientes)[/dim]")
-
-    # ── 5. Rule tagging + ensemble score ──────
-    # Rule tagger always runs regardless of --skip-detectors.
-    # When detectors are skipped, ensemble score is driven solely by rule hits.
+    # ── 3. ATT&CK rule tagging + KB retrieval + heuristic score ──
     kb_label = "+ KB retrieval" if use_kb else ""
-    console.print(f"[bold]Step 5:[/bold] ATT&CK rule tagging {kb_label} + ensemble score...")
-    if skip_detectors:
-        console.print("  [dim](detector scores zeroed — escalation driven by ATT&CK hits only)[/dim]")
+    console.print(f"[bold]Step 3:[/bold] ATT&CK rule tagging {kb_label} + heuristic scoring...")
     window_dicts = []
     for i, w in enumerate(windows):
         wd = w.to_dict()
@@ -246,13 +213,7 @@ def run_pipeline(
                 wd["peak_chain"] = peak.to_dict()
         except Exception as exc:  # noqa: BLE001
             logger.debug("peak_chain attach failed for window %d: %s", i, exc)
-        wd["if_score"] = float(if_scores[i])
-        wd["gru_score"] = float(gru_scores[i])
-        wd["detector_score"] = ensemble_score(
-            iforest_score=float(if_scores[i]),
-            gru_score=float(gru_scores[i]),
-            has_attck_hits=len(wd["attck_hits"]) > 0,
-        )
+        wd["detector_score"] = heuristic_score(wd)
         window_dicts.append(wd)
 
     # Guardar janelas enriquecidas + chains
@@ -281,18 +242,22 @@ def run_pipeline(
     with open(ep_path, "w", encoding="utf-8") as f:
         json.dump(ep_payload, f, indent=2, default=str, ensure_ascii=False)
 
-    # ── 6. SLM Analyst (Phi-3) + LLM Judge (Llama 3.1) ──
+    # ── 4. SLM Analyst (Phi-3) + LLM Judge (Llama 3.1) ──
     judge_results: list[JudgeResult] = []
     if not skip_judge:
-        # ── 6a. SLM pre-diagnosis (Phi-3 Medium) ──
+        # ── 4a. SLM pre-diagnosis (Phi-3 Medium) ──
         slm_analyses = []
         try:
             console.print(
-                f"[bold]Step 6a:[/bold] SLM pre-diagnosis "
+                f"[bold]Step 4a:[/bold] SLM pre-diagnosis "
                 f"({os.getenv('SLM_MODEL', 'phi3:mini')})..."
             )
             analyst = SLMAnalyst()
-            slm_analyses = analyst.analyse_batch(window_dicts, threshold=effective_threshold)
+            slm_analyses = analyst.analyse_batch(
+                window_dicts,
+                threshold=effective_threshold,
+                max_calls=max_llm_calls,
+            )
             console.print(f"  → {len(slm_analyses)} janelas pré-diagnosticadas pelo SLM")
 
             slm_path = output_dir / "slm_analyses.json"
@@ -301,10 +266,10 @@ def run_pipeline(
         except Exception as e:
             console.print(f"[yellow]SLM analyst skipped: {e}[/yellow]")
 
-        # ── 6b. LLM Judge final validation (Llama 3.1) ──
+        # ── 4b. LLM Judge final validation (Llama 3.1) ──
         try:
             console.print(
-                f"[bold]Step 6b:[/bold] LLM judge validation "
+                f"[bold]Step 4b:[/bold] LLM judge validation "
                 f"({os.getenv('JUDGE_MODEL', 'llama3.2')})..."
             )
             judge = LLMJudge()
@@ -312,7 +277,7 @@ def run_pipeline(
                 window_dicts,
                 slm_analyses=slm_analyses if slm_analyses else None,
                 threshold=effective_threshold,
-                max_windows=50,
+                max_windows=max_llm_calls if max_llm_calls is not None else 50,
             )
 
             judge_path = output_dir / "judge_results.json"
@@ -322,16 +287,48 @@ def run_pipeline(
         except Exception as e:
             console.print(f"[yellow]LLM judge skipped: {e}[/yellow]")
     else:
-        console.print("[dim]Step 6: SLM + LLM judge skipped (--skip-judge)[/dim]")
+        console.print("[dim]Step 4: SLM + LLM judge skipped (--skip-judge)[/dim]")
 
-    # ── 7. Relatório ──────────────────────────
-    console.print("[bold]Step 7:[/bold] Generating report...")
+    # ── 5. Relatório ──────────────────────────
+    console.print("[bold]Step 5:[/bold] Generating report...")
     report_path = generate_report(window_dicts, judge_results, output_dir, dataset)
 
-    # ── 8. Métricas (se --evaluate) ───────────
+    # ── 6. Métricas (se --evaluate) ───────────
     if evaluate and "label" in df.columns:
-        console.print("[bold]Step 8:[/bold] Computing metrics...")
-        _print_metrics(window_dicts, df)
+        console.print("[bold]Step 6:[/bold] Computing metrics...")
+        from evaluate import evaluate_run
+        evaluate_run(
+            windows=window_dicts,
+            judge_results=[r.to_dict() for r in judge_results] if judge_results else None,
+            threshold=effective_threshold,
+            output_path=output_dir / "metrics.json",
+        )
+
+    # ── Provenance: telemetry + manifest ──────────────────────────────
+    try:
+        TELEMETRY.dump(output_dir / "telemetry.json")
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("telemetry dump failed: %s", exc)
+    try:
+        write_run_manifest(
+            output_dir,
+            input_path=input_path,
+            dataset=dataset,
+            threshold=effective_threshold,
+            seed=seed,
+            window_size_s=WINDOW_SIZE,
+            max_events=MAX_EVENTS,
+            use_kb=use_kb,
+            skip_judge=skip_judge,
+            max_llm_calls=max_llm_calls,
+            n_windows=len(window_dicts),
+            n_high_risk=int(high_risk_count),
+            n_judged=len(judge_results),
+            slm_model=os.getenv("SLM_MODEL", ""),
+            judge_model=os.getenv("JUDGE_MODEL", ""),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("manifest write failed: %s", exc)
 
     # Sumário final
     console.print("")
@@ -356,8 +353,9 @@ def run_pipeline(
 
 
 def _print_metrics(window_dicts: list, df) -> None:
-    """Métricas básicas se existirem labels no dataset."""
-    console.print("  (métricas detalhadas requerem labels por evento — disponível no notebook)")
+    """Deprecated stub — real metrics live in evaluate.evaluate_run()."""
+    from evaluate import evaluate_run
+    evaluate_run(window_dicts, threshold=ANOMALY_THRESHOLD)
 
 
 # ─────────────────────────────────────────────
@@ -373,10 +371,11 @@ def main(
     output_dir: Optional[Path] = typer.Option(None, help="Directório de output"),
     model_dir: Optional[Path] = typer.Option(None, help="Directório com modelos pré-treinados"),
     skip_judge: bool = typer.Option(False, help="Salta o LLM judge (economiza tokens)"),
-    skip_detectors: bool = typer.Option(False, help="Salta IsolationForest e GRU; mantém o ATT&CK rule tagger"),
-    threshold: Optional[float] = typer.Option(None, help="Sobrepõe ANOMALY_THRESHOLD do .env (ex: 0.2 com --skip-detectors)"),
+    threshold: Optional[float] = typer.Option(None, help="Sobrepõe ANOMALY_THRESHOLD do .env (default 0.6)"),
     evaluate: bool = typer.Option(False, help="Calcula métricas (requer labels)"),
     use_kb: bool = typer.Option(True, "--use-kb/--no-use-kb", help="Augmenta o tagger com retrieval do ATT&CK KB (Chroma)"),
+    max_llm_calls: Optional[int] = typer.Option(None, "--max-llm-calls", help="Limita chamadas ao Ollama em cada estágio LLM (SLM e Judge). \u00datil para smoke tests."),
+    seed: int = typer.Option(42, "--seed", help="Seed global para reprodutibilidade (numpy + random + PYTHONHASHSEED)."),
     verbose: bool = typer.Option(False, help="Log detalhado"),
 ):
     level = logging.DEBUG if verbose else logging.INFO
@@ -388,10 +387,11 @@ def main(
         output_dir=output_dir,
         model_dir=model_dir,
         skip_judge=skip_judge,
-        skip_detectors=skip_detectors,
         threshold=threshold,
         evaluate=evaluate,
         use_kb=use_kb,
+        max_llm_calls=max_llm_calls,
+        seed=seed,
     )
 
 

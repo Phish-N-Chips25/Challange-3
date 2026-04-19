@@ -94,6 +94,12 @@ def enforce_schema(
     """
     df = df.copy()
 
+    # Drop duplicated column labels (keeping the first). Some source CSVs
+    # carry the canonical name AND a rename-map alias collides into it,
+    # which makes df[col] return a 2-D frame and breaks the dtype casts below.
+    if df.columns.duplicated().any():
+        df = df.loc[:, ~df.columns.duplicated()]
+
     # Add missing columns with sensible defaults
     for col in CANONICAL_COLUMNS:
         if col not in df.columns:

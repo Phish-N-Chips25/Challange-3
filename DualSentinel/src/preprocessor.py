@@ -89,8 +89,20 @@ class WindowFeatures:
     # Embeddings + smart features (preenchidos por make_windows)
     embedding: np.ndarray = field(default_factory=lambda: np.zeros(EMBEDDING_DIM, dtype=np.float32))
     smart_features: dict = field(default_factory=dict)
+    # Per-field token sets retained for baseline rarity scoring (populated by make_windows)
+    _field_tokens: dict = field(default_factory=dict)
+    # Baseline-deviation features (populated post-hoc by BenignBaseline, see embeddings.py)
+    baseline_features: dict = field(default_factory=dict)
     # Lista de eventos resumidos para o evidence pack do judge
     event_summaries: list = field(default_factory=list)
+    # Ground-truth label aggregated from events: 1 if any event in this
+    # window is labelled malicious, 0 if any is normal, -1 if unknown.
+    # Set by make_windows when the source df has a `label` column.
+    label: int = -1
+    # Set of MITRE technique IDs present in the labelled events of this
+    # window (used for technique-level evaluation). Empty if no `technique`
+    # column or if window has no labelled events.
+    techniques_truth: list = field(default_factory=list)
 
     def to_feature_vector(self) -> np.ndarray:
         """Converte para array numérico para ML.
@@ -130,7 +142,7 @@ class WindowFeatures:
 
     def to_dict(self) -> dict:
         d = {k: v for k, v in self.__dict__.items()
-             if k not in ("event_summaries", "embedding")}
+             if k not in ("event_summaries", "embedding", "_field_tokens")}
         d["window_start"] = self.window_start.isoformat()
         d["window_end"] = self.window_end.isoformat()
         d["event_summaries"] = self.event_summaries
@@ -475,6 +487,7 @@ def make_windows(
             emb_data = build_window_embedding(chunk)
             wf.embedding = emb_data["embedding"]
             wf.smart_features = emb_data["smart_features"]
+            wf._field_tokens = emb_data.get("field_tokens", {})
         except Exception as e:  # noqa: BLE001
             logger.debug(f"Embedding extraction failed for window {current}: {e}")
 
@@ -504,6 +517,23 @@ def make_windows(
                     parts.append(f"cmd={cmd[:120]}")
             summaries.append(" | ".join(parts))
         wf.event_summaries = summaries[:50]  # máximo 50 linhas no evidence pack
+
+        # Aggregate ground-truth label for the window (when present in the source).
+        # Convention: 1 = malicious if any event is malicious, 0 = normal if all
+        # known events are normal, -1 = unknown if no event has a label.
+        if "label" in chunk.columns:
+            try:
+                lbl = pd.to_numeric(chunk["label"], errors="coerce").dropna().astype(int)
+                if len(lbl):
+                    wf.label = int(1 if (lbl == 1).any() else (0 if (lbl == 0).any() else -1))
+            except Exception:  # noqa: BLE001
+                wf.label = -1
+        if "technique" in chunk.columns:
+            tids = (
+                chunk["technique"].dropna().astype(str).str.strip()
+                .replace("", pd.NA).dropna().unique().tolist()
+            )
+            wf.techniques_truth = sorted(tids)
 
         yield wf
         current = w_end

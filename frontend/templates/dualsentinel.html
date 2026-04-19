@@ -1,0 +1,826 @@
+<!doctype html>
+<html lang="pt">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Phish'N'Chips | DualSentinel</title>
+  <style>
+    :root {
+      --bg: #07131f; --card: rgba(15,23,42,0.9); --line: rgba(148,163,184,0.2);
+      --line-soft: rgba(148,163,184,0.12); --text: #e2e8f0; --muted: #94a3b8;
+      --accent: #67e8f9;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      min-height: 100vh;
+      font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      color: var(--text);
+      background: linear-gradient(135deg, #03111d, var(--bg) 55%, #10223a);
+      overflow-x: hidden;
+    }
+
+    /* ── Top bar ── */
+    .topbar {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 24px; border-bottom: 1px solid var(--line-soft);
+      background: rgba(7,19,31,0.85); backdrop-filter: blur(14px);
+      position: sticky; top: 0; z-index: 100;
+    }
+    .brand { display:flex; align-items:center; gap:10px; font-weight:700; font-size:1rem; }
+    .dot { width:10px; height:10px; border-radius:999px; background:var(--accent); box-shadow:0 0 12px rgba(125,211,252,0.9); }
+    .topbar-right { display:flex; align-items:center; gap:14px; font-size:.88rem; color:var(--muted); }
+    .nav-link {
+      padding:7px 14px; border-radius:10px; border:1px solid rgba(103,232,249,0.18);
+      background:rgba(2,6,23,0.45); color:#cbd5e1; font-size:.84rem; text-decoration:none;
+      transition:border-color 150ms, background 150ms;
+    }
+    .nav-link:hover { border-color:rgba(103,232,249,0.4); background:rgba(15,23,42,0.85); }
+    .nav-link.active { color:#020617; background:linear-gradient(90deg,#7dd3fc,#c084fc); border-color:transparent; font-weight:700; }
+    .user-chip {
+      display:flex; align-items:center; gap:8px; padding:6px 12px; border-radius:999px;
+      border:1px solid rgba(103,232,249,0.2); background:rgba(2,6,23,0.4); color:var(--text); font-size:.86rem;
+    }
+    .logout-btn {
+      padding:7px 14px; border-radius:8px; border:0; cursor:pointer; font-size:.86rem;
+      font-weight:600; color:#020617; background: linear-gradient(90deg, #7dd3fc, #c084fc);
+    }
+    .logout-btn:hover { filter:brightness(1.08); }
+
+    /* ── Status bar (DualSentinel-specific) ── */
+    .statusbar {
+      display:flex; gap:10px; padding:10px 24px; align-items:center;
+      border-bottom:1px solid var(--line-soft); background:rgba(2,6,23,0.3); flex-wrap:wrap;
+    }
+    .status-chip {
+      display:inline-flex; align-items:center; gap:6px; padding:5px 10px; border-radius:999px;
+      font-size:.78rem; border:1px solid rgba(148,163,184,0.14); background:rgba(2,6,23,0.45);
+    }
+    .led { width:8px; height:8px; border-radius:999px; background:#94a3b8; }
+    .led.green  { background:#4ade80; box-shadow:0 0 8px #4ade80; }
+    .led.yellow { background:#fbbf24; box-shadow:0 0 8px #fbbf24; }
+    .led.red    { background:#f87171; box-shadow:0 0 8px #f87171; }
+
+    /* ── Main layout ── */
+    .shell { display:grid; grid-template-columns:340px 1fr; height:calc(100vh - 110px); }
+    @media(max-width:900px) { .shell { grid-template-columns:1fr; height:auto; } }
+
+    /* ── Left panel (controls + results list) ── */
+    .left-panel {
+      border-right:1px solid var(--line-soft); display:flex; flex-direction:column;
+      background:rgba(2,6,23,0.3); overflow:hidden;
+    }
+    .panel-head {
+      padding:14px 16px; border-bottom:1px solid var(--line-soft);
+      display:flex; align-items:center; justify-content:space-between;
+    }
+    .panel-head h2 { font-size:.9rem; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); }
+    .panel-tabs { display:flex; gap:4px; padding:8px 12px 0; border-bottom:1px solid var(--line-soft); }
+    .panel-tab {
+      flex:1; text-align:center; padding:8px 6px; border-radius:8px 8px 0 0; cursor:pointer;
+      font-size:.78rem; color:var(--muted); border:1px solid transparent; border-bottom:0;
+    }
+    .panel-tab.active { color:#67e8f9; background:rgba(103,232,249,0.06); border-color:rgba(103,232,249,0.18); }
+    .panel-body { flex:1; overflow-y:auto; }
+
+    .chain-list { padding:8px; }
+    .chain-item {
+      padding:11px 13px; border-radius:12px; cursor:pointer; margin-bottom:6px;
+      border:1px solid transparent; background:rgba(15,23,42,0.5);
+      transition:border-color 150ms, background 150ms;
+    }
+    .chain-item:hover  { border-color:rgba(103,232,249,0.2); background:rgba(15,23,42,0.8); }
+    .chain-item.active { border-color:rgba(103,232,249,0.45); background:rgba(15,23,42,0.85); }
+    .chain-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:5px; }
+    .chain-gt { font-size:.88rem; font-weight:700; color:#f8fafc; }
+    .score-badge { font-size:.76rem; font-weight:700; padding:3px 8px; border-radius:999px; }
+    .score-high   { background:rgba(248,113,113,0.18); color:#fca5a5; border:1px solid rgba(248,113,113,0.3); }
+    .score-medium { background:rgba(251,191,36,0.15);  color:#fde68a; border:1px solid rgba(251,191,36,0.25); }
+    .score-low    { background:rgba(74,222,128,0.12);  color:#86efac; border:1px solid rgba(74,222,128,0.2); }
+    .chain-meta { color:var(--muted); font-size:.78rem; }
+    .chain-images { margin-top:4px; color:#7dd3fc; font-size:.75rem; font-family:monospace; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .spinner-row { display:flex; align-items:center; gap:8px; padding:20px 16px; color:var(--muted); font-size:.86rem; }
+    .spinner { width:16px; height:16px; border-radius:50%; border:2px solid rgba(103,232,249,0.2); border-top-color:var(--accent); animation:spin .7s linear infinite; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+
+    /* ── Detail panel ── */
+    .detail-panel { overflow-y:auto; padding:20px 24px; }
+    .empty-state { display:flex; align-items:center; justify-content:center; height:100%; color:var(--muted); font-size:.95rem; text-align:center; padding:0 24px; }
+    .section-card {
+      background:var(--card); border:1px solid var(--line-soft); border-radius:16px;
+      padding:18px 20px; margin-bottom:16px; backdrop-filter:blur(14px);
+      box-shadow:inset 0 1px 0 rgba(255,255,255,0.02), 0 16px 40px rgba(0,0,0,0.2);
+    }
+    .section-card h3 { font-size:.82rem; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin-bottom:12px; }
+    .summary-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
+    .stat-box { background:rgba(2,6,23,0.45); border:1px solid rgba(148,163,184,0.1); border-radius:10px; padding:10px 12px; }
+    .stat-label { font-size:.74rem; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; }
+    .stat-value { font-size:1.1rem; font-weight:700; color:#f8fafc; margin-top:2px; }
+    .eid-row { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+    .eid-chip { padding:4px 9px; border-radius:999px; font-size:.74rem; background:rgba(103,232,249,0.1); border:1px solid rgba(103,232,249,0.2); color:#b8f3ff; }
+
+    .event-table { width:100%; border-collapse:collapse; font-size:.82rem; }
+    .event-table th { text-align:left; padding:7px 10px; color:var(--muted); font-size:.75rem; text-transform:uppercase; letter-spacing:.06em; border-bottom:1px solid var(--line-soft); }
+    .event-table td { padding:7px 10px; border-bottom:1px solid rgba(148,163,184,0.06); vertical-align:top; }
+    .event-table .mono { font-family:monospace; }
+
+    .attr-result { padding:14px 16px; border-radius:12px; border:1px solid rgba(103,232,249,0.18); background:rgba(2,6,23,0.5); }
+    .attr-field { margin-bottom:10px; }
+    .attr-field:last-child { margin-bottom:0; }
+    .attr-label { font-size:.74rem; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); margin-bottom:3px; }
+    .attr-val { font-size:.92rem; color:#f8fafc; line-height:1.55; }
+
+    /* ── DualSentinel control panel ── */
+    .ds2-panel { padding:10px 8px; display:flex; flex-direction:column; gap:8px; }
+    .ds2-row { display:flex; flex-direction:column; gap:4px; }
+    .ds2-label { font-size:.72rem; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; }
+    .ds2-select, .ds2-input {
+      width:100%; padding:7px 10px; border-radius:8px; border:1px solid var(--line);
+      background:rgba(2,6,23,0.7); color:var(--text); font-size:.82rem; outline:none; font-family:inherit;
+    }
+    .ds2-select:focus, .ds2-input:focus { border-color:rgba(103,232,249,0.4); }
+    .ds2-slider-row { display:flex; align-items:center; gap:8px; }
+    .ds2-slider { flex:1; accent-color:#67e8f9; }
+    .ds2-slider-val { font-size:.8rem; font-family:monospace; color:#cbd5e1; width:38px; text-align:right; }
+    .ds2-toggle-row { display:flex; align-items:center; gap:8px; font-size:.82rem; color:var(--muted); cursor:pointer; }
+    .ds2-toggle-row input { accent-color:#67e8f9; width:14px; height:14px; cursor:pointer; }
+    .ds2-mini-row { display:flex; gap:6px; }
+    .ds2-mini-row .ds2-row { flex:1; }
+    .ds2-run-btn {
+      width:100%; padding:10px; border-radius:10px; border:0; cursor:pointer; font-size:.9rem;
+      font-weight:700; color:#020617; background:linear-gradient(90deg,#7dd3fc,#c084fc);
+      box-shadow:0 8px 20px rgba(103,232,249,0.14); transition:filter 150ms, transform 150ms;
+    }
+    .ds2-run-btn:hover:not(:disabled) { filter:brightness(1.07); transform:translateY(-1px); }
+    .ds2-run-btn:disabled { opacity:.6; cursor:wait; }
+    .ds2-status { font-size:.78rem; color:var(--muted); padding:6px 4px; line-height:1.5; }
+    .ds2-progress { height:4px; border-radius:999px; background:rgba(255,255,255,0.06); margin-top:4px; overflow:hidden; }
+    .ds2-progress-fill { height:100%; border-radius:999px; background:linear-gradient(90deg,#67e8f9,#c084fc); width:0%; transition:width 400ms; animation:ds2pulse 1.5s ease-in-out infinite; }
+    @keyframes ds2pulse { 0%,100%{opacity:1} 50%{opacity:.65} }
+    .ds2-progress-fill.done { animation:none; width:100%; background:linear-gradient(90deg,#4ade80,#22c55e); }
+    .ds2-progress-fill.error { animation:none; width:100%; background:#f87171; }
+    .ds2-filter-chip { display:inline-flex; align-items:center; gap:5px; padding:4px 10px; border-radius:999px; cursor:pointer; font-size:.74rem; border:1px solid var(--line); background:rgba(2,6,23,0.4); color:var(--muted); }
+    .ds2-filter-chip.active { color:#020617; background:linear-gradient(90deg,#7dd3fc,#c084fc); border-color:transparent; font-weight:700; }
+    .ds2-stat-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(110px, 1fr)); gap:8px; }
+    .ds2-prov-grid { display:grid; grid-template-columns:auto 1fr; gap:6px 12px; font-size:.78rem; align-items:baseline; }
+    .ds2-prov-key { color:var(--muted); }
+    .ds2-prov-val { color:#cbd5e1; font-family:monospace; word-break:break-all; }
+    .run-history-item {
+      padding:10px 12px; border-radius:10px; cursor:pointer; margin-bottom:5px;
+      border:1px solid transparent; background:rgba(15,23,42,0.45); transition:border-color 150ms;
+    }
+    .run-history-item:hover { border-color:rgba(103,232,249,0.25); }
+    .run-history-item.active { border-color:rgba(103,232,249,0.5); background:rgba(15,23,42,0.85); }
+    .run-history-id { font-family:monospace; font-size:.78rem; color:#67e8f9; }
+    .run-history-meta { font-size:.72rem; color:var(--muted); margin-top:3px; }
+
+    .verdict-malicious   { background:rgba(248,113,113,0.18); color:#fca5a5; border:1px solid rgba(248,113,113,0.3); }
+    .verdict-suspicious  { background:rgba(251,191,36,0.15);  color:#fde68a; border:1px solid rgba(251,191,36,0.25); }
+    .verdict-normal      { background:rgba(74,222,128,0.12);  color:#86efac; border:1px solid rgba(74,222,128,0.2); }
+    .verdict-badge { font-size:.76rem; font-weight:700; padding:3px 8px; border-radius:999px; text-transform:capitalize; }
+    .technique-chip {
+      display:inline-flex; flex-direction:column; gap:2px; padding:8px 10px; border-radius:10px;
+      border:1px solid rgba(103,232,249,0.18); background:rgba(2,6,23,0.5); margin:4px 4px 0 0;
+    }
+    .technique-id   { font-family:monospace; font-size:.82rem; color:#67e8f9; font-weight:700; }
+    .technique-name { font-size:.78rem; color:#cbd5e1; }
+    .technique-conf { font-size:.72rem; color:var(--muted); }
+    .technique-evidence { font-size:.72rem; color:#94a3b8; margin-top:2px; line-height:1.4; font-family:monospace; word-break:break-all; }
+    .event-summary-list { display:flex; flex-direction:column; gap:3px; max-height:260px; overflow-y:auto; }
+    .event-summary-row { font-size:.76rem; font-family:monospace; color:#94a3b8; padding:4px 8px; border-radius:6px; background:rgba(2,6,23,0.38); line-height:1.45; word-break:break-all; }
+    .fp-high   { color:#fca5a5; } .fp-medium { color:#fde68a; } .fp-low { color:#86efac; }
+  </style>
+</head>
+<body>
+  <nav class="topbar">
+    <div class="brand"><span class="dot"></span> Phish'N'Chips &nbsp;·&nbsp; DualSentinel</div>
+    <div class="topbar-right">
+      <a href="{{ url_for('dashboard') }}" class="nav-link">Real-time SOC</a>
+      <a href="{{ url_for('dualsentinel_page') }}" class="nav-link active">DualSentinel</a>
+      <span class="user-chip">🔐 {{ nome }}</span>
+      <form method="post" action="{{ url_for('logout') }}" style="margin:0">
+        <button type="submit" class="logout-btn">Terminar sessão</button>
+      </form>
+    </div>
+  </nav>
+
+  <div class="statusbar">
+    <span class="status-chip" id="ollamaChip">
+      <span class="led yellow" id="ollamaLed"></span>
+      <span id="ollamaLabel">Ollama — a verificar...</span>
+    </span>
+    <span class="status-chip" id="slmChip">
+      <span class="led" id="slmLed"></span>
+      <span id="slmLabel">SLM — ?</span>
+    </span>
+    <span class="status-chip" id="judgeChip">
+      <span class="led" id="judgeLed"></span>
+      <span id="judgeLabel">Judge — ?</span>
+    </span>
+    <span class="status-chip" id="kbChip">
+      <span class="led" id="kbLed"></span>
+      <span id="kbLabel">ATT&amp;CK KB — ?</span>
+    </span>
+    <span class="status-chip" id="lastRunChip">
+      <span class="led" id="lastRunLed"></span>
+      <span id="lastRunLabel">Última run — nenhuma</span>
+    </span>
+  </div>
+
+  <div class="shell">
+    <aside class="left-panel">
+      <div class="panel-tabs">
+        <div class="panel-tab active" id="tabRun"     onclick="switchTab('run')">▶ Nova análise</div>
+        <div class="panel-tab"        id="tabResults" onclick="switchTab('results')">📊 Resultados</div>
+        <div class="panel-tab"        id="tabHistory" onclick="switchTab('history')">📁 Histórico</div>
+      </div>
+      <div class="panel-body" id="panelBody">
+        <div class="spinner-row"><div class="spinner"></div>A carregar...</div>
+      </div>
+    </aside>
+
+    <section class="detail-panel">
+      <div class="empty-state" id="emptyState">
+        Configura uma análise no painel à esquerda e clica em <strong style="color:#67e8f9">Analisar</strong>.
+      </div>
+      <div id="detailContent" style="display:none"></div>
+    </section>
+  </div>
+
+  <script>
+    let activeTab     = 'run';
+    let ds2Results    = null;
+    let ds2RunId      = null;
+    let ds2PollTimer  = null;
+    let ds2Filter     = 'all';
+    let allChains     = [];
+    let activeChainIdx= null;
+    let cachedFiles   = [];
+    let cachedHistory = [];
+
+    const emptyState    = document.getElementById('emptyState');
+    const detailContent = document.getElementById('detailContent');
+    const panelBody     = document.getElementById('panelBody');
+
+    function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+    function scoreClass(s) { return s >= 0.85 ? 'score-high' : s >= 0.70 ? 'score-medium' : 'score-low'; }
+    function verdictClass(v) {
+      const l = (v || '').toLowerCase();
+      if (l.includes('malicious') || l.includes('highly')) return 'verdict-malicious';
+      if (l.includes('suspicious')) return 'verdict-suspicious';
+      return 'verdict-normal';
+    }
+    function fpClass(fp) {
+      const l = (fp || '').toLowerCase();
+      return l === 'high' ? 'fp-high' : l === 'medium' ? 'fp-medium' : 'fp-low';
+    }
+
+    // ── Status bar ──────────────────────────────────────────────────────────
+    async function refreshStatusBar() {
+      try {
+        const h = await fetch('/api/dualsentinel/health').then(r => r.json());
+
+        // Ollama
+        const ollamaUp = !!h.ollama_up;
+        document.getElementById('ollamaLed').className   = ollamaUp ? 'led green' : 'led red';
+        document.getElementById('ollamaLabel').textContent = ollamaUp
+          ? `Ollama @ ${h.ollama_url}` : `Ollama offline (${h.ollama_url})`;
+
+        // SLM model
+        const slmReady = h.slm_available;
+        document.getElementById('slmLed').className   = ollamaUp ? (slmReady ? 'led green' : 'led red') : 'led';
+        document.getElementById('slmLabel').textContent = `SLM — ${h.slm_model}${slmReady ? '' : ' (não instalado)'}`;
+
+        // Judge model
+        const judgeReady = h.judge_available;
+        document.getElementById('judgeLed').className   = ollamaUp ? (judgeReady ? 'led green' : 'led red') : 'led';
+        document.getElementById('judgeLabel').textContent = `Judge — ${h.judge_model}${judgeReady ? '' : ' (não instalado)'}`;
+
+        // KB
+        document.getElementById('kbLed').className   = h.kb_ready ? 'led green' : 'led yellow';
+        document.getElementById('kbLabel').textContent = h.kb_ready
+          ? `ATT&CK KB — ${h.kb_techniques || '?'} técnicas`
+          : 'ATT&CK KB — não indexada';
+
+        // Last run
+        if (h.last_run) {
+          document.getElementById('lastRunLed').className = 'led green';
+          const r = h.last_run;
+          const ts = (r.timestamp || '').replace('T', ' ').slice(0, 16);
+          document.getElementById('lastRunLabel').textContent =
+            `Última: ${ts} · ${r.windows ?? '?'} jan · ${r.judged ?? 0} judged`;
+        } else {
+          document.getElementById('lastRunLed').className = 'led';
+          document.getElementById('lastRunLabel').textContent = 'Última run — nenhuma';
+        }
+      } catch (err) {
+        document.getElementById('ollamaLed').className = 'led red';
+        document.getElementById('ollamaLabel').textContent = 'Health check falhou';
+      }
+    }
+
+    // ── Tabs ────────────────────────────────────────────────────────────────
+    function switchTab(tab) {
+      activeTab = tab;
+      ['run', 'results', 'history'].forEach(t => {
+        document.getElementById('tab' + t.charAt(0).toUpperCase() + t.slice(1))
+          .classList.toggle('active', t === tab);
+      });
+      if (tab === 'run')     renderRunForm();
+      if (tab === 'results') renderResultsList();
+      if (tab === 'history') loadHistory();
+    }
+
+    // ── Run form ────────────────────────────────────────────────────────────
+    async function renderRunForm() {
+      if (!cachedFiles.length) {
+        try { cachedFiles = await fetch('/api/dualsentinel/samples').then(r => r.json()); }
+        catch (err) {
+          panelBody.innerHTML = `<div class="spinner-row" style="color:#f87171">Erro: ${esc(err.message)}</div>`;
+          return;
+        }
+      }
+
+      const fileOptions = cachedFiles.length
+        ? cachedFiles.map(f => `<option value="${esc(f.rel_path)}">${esc(f.name)} (${f.size_kb} KB)</option>`).join('')
+        : '<option value="">Nenhum ficheiro em data/samples/</option>';
+
+      panelBody.innerHTML = `
+        <div class="ds2-panel">
+          <div class="ds2-row">
+            <span class="ds2-label">Ficheiro de amostra</span>
+            <select class="ds2-select" id="ds2File">${fileOptions}</select>
+          </div>
+          <div class="ds2-row">
+            <span class="ds2-label">Tipo de dataset</span>
+            <select class="ds2-select" id="ds2Dataset">
+              <option value="lmd">LMD-2023</option>
+              <option value="splunk">Splunk</option>
+              <option value="silrad">SILRAD</option>
+            </select>
+          </div>
+          <div class="ds2-row">
+            <span class="ds2-label">Threshold de anomalia: <span id="ds2ThresholdLabel">0.60</span></span>
+            <div class="ds2-slider-row">
+              <input type="range" class="ds2-slider" id="ds2Threshold" min="0.05" max="1.0" step="0.05" value="0.6"
+                oninput="document.getElementById('ds2ThresholdLabel').textContent = parseFloat(this.value).toFixed(2)">
+            </div>
+          </div>
+          <div class="ds2-row">
+            <span class="ds2-label">Linhas a analisar</span>
+            <select class="ds2-select" id="ds2MaxRows">
+              <option value="2000">2 000 (rápido)</option>
+              <option value="5000" selected>5 000 (padrão)</option>
+              <option value="10000">10 000</option>
+              <option value="25000">25 000</option>
+              <option value="">Todas (lento)</option>
+            </select>
+          </div>
+          <div class="ds2-mini-row">
+            <div class="ds2-row">
+              <span class="ds2-label">Max LLM calls</span>
+              <input type="number" class="ds2-input" id="ds2MaxLlm" placeholder="sem limite" min="1" step="1">
+            </div>
+            <div class="ds2-row">
+              <span class="ds2-label">Seed</span>
+              <input type="number" class="ds2-input" id="ds2Seed" value="42" min="0" step="1">
+            </div>
+          </div>
+          <label class="ds2-toggle-row">
+            <input type="checkbox" id="ds2SkipJudge"> Saltar LLM Judge (mais rápido)
+          </label>
+          <label class="ds2-toggle-row">
+            <input type="checkbox" id="ds2UseKb" checked> Usar ATT&amp;CK KB (RAG)
+          </label>
+          <label class="ds2-toggle-row">
+            <input type="checkbox" id="ds2Evaluate"> Calcular métricas (--evaluate)
+          </label>
+          <button class="ds2-run-btn" id="ds2RunBtn" onclick="startDs2Run()">▶ Analisar</button>
+          <div class="ds2-status" id="ds2Status">Configura e clica em Analisar.</div>
+          <div class="ds2-progress" id="ds2Progress" style="display:none">
+            <div class="ds2-progress-fill" id="ds2ProgressFill"></div>
+          </div>
+        </div>`;
+    }
+
+    async function startDs2Run() {
+      const fileEl = document.getElementById('ds2File');
+      if (!fileEl || !fileEl.value) return;
+
+      const btn        = document.getElementById('ds2RunBtn');
+      const statusEl   = document.getElementById('ds2Status');
+      const progressEl = document.getElementById('ds2Progress');
+      const fillEl     = document.getElementById('ds2ProgressFill');
+
+      btn.disabled = true;
+      btn.textContent = '⏳ A correr...';
+      progressEl.style.display = '';
+      fillEl.className = 'ds2-progress-fill';
+      fillEl.style.width = '15%';
+      statusEl.textContent = 'A iniciar pipeline...';
+      emptyState.style.display = ''; emptyState.innerHTML = 'Pipeline em execução — os resultados aparecem quando terminar.';
+      detailContent.style.display = 'none';
+
+      try {
+        const resp = await fetch('/api/dualsentinel/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            file:          fileEl.value,
+            dataset:       document.getElementById('ds2Dataset').value,
+            threshold:     parseFloat(document.getElementById('ds2Threshold').value),
+            skip_judge:    document.getElementById('ds2SkipJudge').checked,
+            max_rows:      document.getElementById('ds2MaxRows').value
+                             ? parseInt(document.getElementById('ds2MaxRows').value) : null,
+            max_llm_calls: (document.getElementById('ds2MaxLlm').value || '').trim()
+                             ? parseInt(document.getElementById('ds2MaxLlm').value) : null,
+            use_kb:        document.getElementById('ds2UseKb').checked,
+            evaluate:      document.getElementById('ds2Evaluate').checked,
+            seed:          parseInt(document.getElementById('ds2Seed').value || '42'),
+          }),
+        }).then(r => r.json().then(j => { if (!r.ok) throw new Error(j.error || r.statusText); return j; }));
+
+        ds2RunId = resp.run_id;
+        pollDs2Status();
+      } catch (err) {
+        statusEl.textContent = 'Erro: ' + err.message;
+        fillEl.className = 'ds2-progress-fill error';
+        btn.disabled = false; btn.textContent = '▶ Analisar';
+      }
+    }
+
+    function pollDs2Status() {
+      if (!ds2RunId) return;
+      ds2PollTimer = setTimeout(async () => {
+        try {
+          const s = await fetch(`/api/dualsentinel/status/${ds2RunId}`).then(r => r.json());
+          const statusEl = document.getElementById('ds2Status');
+          const fillEl   = document.getElementById('ds2ProgressFill');
+          if (statusEl) statusEl.textContent = s.message || s.status;
+
+          if (s.status === 'done') {
+            if (fillEl) { fillEl.className = 'ds2-progress-fill done'; fillEl.style.width = '100%'; }
+            await loadDs2Results();
+            refreshStatusBar();
+          } else if (s.status === 'error') {
+            if (fillEl) fillEl.className = 'ds2-progress-fill error';
+            const btn = document.getElementById('ds2RunBtn');
+            if (btn) { btn.disabled = false; btn.textContent = '▶ Analisar'; }
+          } else {
+            if (fillEl) fillEl.style.width = Math.min(85, parseInt(fillEl.style.width || '15') + 5) + '%';
+            pollDs2Status();
+          }
+        } catch (_) { pollDs2Status(); }
+      }, 2000);
+    }
+
+    async function loadDs2Results() {
+      const btn = document.getElementById('ds2RunBtn');
+      try {
+        ds2Results = await fetch(`/api/dualsentinel/results/${ds2RunId}`)
+          .then(r => r.json().then(j => { if (!r.ok) throw new Error(j.error || r.statusText); return j; }));
+        buildAllChains(ds2Results);
+        switchTab('results');
+        renderDs2Overview(ds2Results);
+      } catch (err) {
+        const statusEl = document.getElementById('ds2Status');
+        if (statusEl) statusEl.textContent = 'Erro ao obter resultados: ' + err.message;
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '▶ Analisar'; }
+      }
+    }
+
+    // ── Results list (chains) ──────────────────────────────────────────────
+    function buildAllChains(data) {
+      const judgeResults = data.judge_results || [];
+      const windows      = data.windows || [];
+      const winMap = {};
+      windows.forEach(w => { winMap[w.window_start] = w; });
+
+      if (judgeResults.length) {
+        allChains = judgeResults
+          .sort((a, b) => parseInt(b.anomaly_score || 0) - parseInt(a.anomaly_score || 0))
+          .map((jr, i) => {
+            const technique = (jr.techniques || [])[0];
+            const gt = technique ? `${technique.technique_id} ${technique.name}` : (jr.verdict || 'unknown');
+            return {
+              chain_id:     i,
+              peak_score:   parseFloat((jr.anomaly_score || 0) / 10),
+              ground_truth: gt,
+              sample_images: [`${jr.window_start} → ${jr.window_end}`],
+              event_count:  parseInt((winMap[jr.window_start] || {}).event_count || 0),
+              _verdict:     (jr.verdict || 'normal').toLowerCase(),
+              _window:      winMap[jr.window_start] || null,
+              _judge:       jr,
+            };
+          });
+      } else {
+        const flagged = windows
+          .filter(w => parseFloat(w.detector_score || 0) > 0)
+          .sort((a, b) => parseFloat(b.detector_score) - parseFloat(a.detector_score))
+          .slice(0, 30);
+        allChains = flagged.map((w, i) => ({
+          chain_id:     i,
+          peak_score:   parseFloat(w.detector_score || 0),
+          ground_truth: (w.attck_hits || [])[0]
+            ? `${w.attck_hits[0].technique} ${w.attck_hits[0].name}` : 'Sem técnica identificada',
+          sample_images: [`${w.window_start} → ${w.window_end}`],
+          event_count:  parseInt(w.event_count || 0),
+          _verdict:     'detector', _window: w, _judge: null,
+        }));
+      }
+    }
+
+    function renderResultsList() {
+      if (!allChains.length) {
+        panelBody.innerHTML = '<div class="spinner-row">Sem resultados — corre uma análise.</div>';
+        return;
+      }
+      const counts = { all: allChains.length, malicious: 0, suspicious: 0, normal: 0 };
+      allChains.forEach(c => { if (counts[c._verdict] !== undefined) counts[c._verdict]++; });
+
+      const chip = (key, label) =>
+        `<span class="ds2-filter-chip ${ds2Filter === key ? 'active' : ''}" onclick="setDs2Filter('${key}')">${label} · ${counts[key] || 0}</span>`;
+
+      const filters = `<div style="padding:8px;display:flex;flex-wrap:wrap;gap:5px;border-bottom:1px solid var(--line)">
+        ${chip('all','Todas')}${chip('malicious','Malicious')}${chip('suspicious','Suspicious')}${chip('normal','Normal')}
+      </div>`;
+
+      const visible = ds2Filter === 'all' ? allChains : allChains.filter(c => c._verdict === ds2Filter);
+      const items = visible.map(c => {
+        const i = allChains.indexOf(c);
+        return `<div class="chain-item ${i === activeChainIdx ? 'active' : ''}" onclick="selectDs2Chain(${i})">
+          <div class="chain-header">
+            <span class="chain-gt">${esc(c.ground_truth)}</span>
+            <span class="score-badge ${scoreClass(c.peak_score)}">${c.peak_score.toFixed(3)}</span>
+          </div>
+          <div class="chain-meta">${c.event_count} events${c._judge ? ' &nbsp;·&nbsp; ' + esc(c._judge.verdict) : ''}</div>
+          <div class="chain-images">${c.sample_images.map(esc).join(' · ')}</div>
+        </div>`;
+      }).join('') || '<div class="spinner-row">Nenhum resultado para este filtro.</div>';
+
+      panelBody.innerHTML = `<div class="chain-list">${filters}${items}</div>`;
+    }
+
+    function setDs2Filter(f) { ds2Filter = f; renderResultsList(); }
+
+    // ── Run history ────────────────────────────────────────────────────────
+    async function loadHistory() {
+      panelBody.innerHTML = '<div class="spinner-row"><div class="spinner"></div>A listar runs...</div>';
+      try {
+        cachedHistory = await fetch('/api/dualsentinel/history').then(r => r.json());
+        if (!cachedHistory.length) {
+          panelBody.innerHTML = '<div class="spinner-row">Nenhuma run anterior.</div>';
+          return;
+        }
+        panelBody.innerHTML = '<div class="chain-list">' + cachedHistory.map(r => `
+          <div class="run-history-item" onclick="loadHistoryRun('${esc(r.run_id)}')">
+            <div class="run-history-id">${esc(r.run_id.slice(0, 16))}…</div>
+            <div class="run-history-meta">
+              ${esc(r.timestamp.replace('T',' ').slice(0,16))} ·
+              ${r.windows ?? '?'} jan · ${r.judged ?? 0} judged
+              ${r.has_metrics ? ' · 📊' : ''}
+            </div>
+          </div>`).join('') + '</div>';
+      } catch (err) {
+        panelBody.innerHTML = `<div class="spinner-row" style="color:#f87171">Erro: ${esc(err.message)}</div>`;
+      }
+    }
+
+    async function loadHistoryRun(runId) {
+      try {
+        const data = await fetch(`/api/dualsentinel/history/${runId}`)
+          .then(r => r.json().then(j => { if (!r.ok) throw new Error(j.error || r.statusText); return j; }));
+        ds2Results = data;
+        ds2RunId   = runId;
+        buildAllChains(data);
+        switchTab('results');
+        renderDs2Overview(data);
+      } catch (err) {
+        emptyState.style.display = ''; detailContent.style.display = 'none';
+        emptyState.innerHTML = `<span style="color:#f87171">Erro: ${esc(err.message)}</span>`;
+      }
+    }
+
+    // ── Detail rendering ───────────────────────────────────────────────────
+    function renderDs2Overview(data) {
+      const judgeResults = data.judge_results || [];
+      const windows      = data.windows || [];
+      const metrics      = data.metrics  || null;
+      const telemetry    = data.telemetry || null;
+      const manifest     = data.manifest  || null;
+
+      const verdictCounts = { malicious: 0, suspicious: 0, normal: 0 };
+      judgeResults.forEach(jr => {
+        const v = (jr.verdict || '').toLowerCase();
+        if (verdictCounts[v] !== undefined) verdictCounts[v]++;
+      });
+      const flagged = windows.filter(w => parseFloat(w.detector_score || 0) >= 0.6).length;
+
+      let metricsHtml = '';
+      if (metrics && metrics.detector) {
+        const fmt = (v) => v == null ? 'n/a' : Number(v).toFixed(4);
+        const det = metrics.detector;
+        const j   = metrics.judge;
+        const tx  = metrics.techniques;
+        metricsHtml = `<div class="section-card">
+          <h3>Métricas <span style="font-size:.72rem;color:var(--muted)">${metrics.n_labelled} janelas rotuladas · thr=${metrics.threshold}</span></h3>
+          <table class="event-table">
+            <thead><tr><th></th><th>P</th><th>R</th><th>F1</th><th>ROC-AUC</th><th>PR-AUC</th><th>TP/FP/FN/TN</th></tr></thead>
+            <tbody>
+              <tr><td><strong>Detector</strong></td>
+                <td>${fmt(det.precision)}</td><td>${fmt(det.recall)}</td><td>${fmt(det.f1)}</td>
+                <td>${fmt(det.roc_auc)}</td><td>${fmt(det.pr_auc)}</td>
+                <td class="mono">${det.confusion.tp}/${det.confusion.fp}/${det.confusion.fn}/${det.confusion.tn}</td>
+              </tr>
+              ${j ? `<tr><td><strong>Judge</strong></td>
+                <td>${fmt(j.precision)}</td><td>${fmt(j.recall)}</td><td>${fmt(j.f1)}</td>
+                <td>${fmt(j.roc_auc)}</td><td>${fmt(j.pr_auc)}</td>
+                <td class="mono">${j.confusion.tp}/${j.confusion.fp}/${j.confusion.fn}/${j.confusion.tn}</td>
+              </tr>` : ''}
+            </tbody>
+          </table>
+          ${tx ? `<div style="margin-top:8px;font-size:.78rem;color:var(--muted)">
+            Técnicas multi-label (n=${tx.n_labels}) —
+            micro F1 <strong style="color:#67e8f9">${fmt(tx.micro.f1)}</strong>,
+            macro F1 <strong style="color:#67e8f9">${fmt(tx.macro.f1)}</strong>
+          </div>` : ''}
+        </div>`;
+      }
+
+      let teleHtml = '';
+      if (telemetry && telemetry.summary) {
+        const s = telemetry.summary;
+        const stages = Object.entries(s.by_stage || {});
+        teleHtml = `<div class="section-card">
+          <h3>Telemetria LLM <span style="font-size:.72rem;color:var(--muted)">wall=${(s.wall_time_s||0).toFixed(1)}s · ${s.total_calls} chamadas</span></h3>
+          <table class="event-table">
+            <thead><tr><th>Stage</th><th>Calls</th><th>OK</th><th>Mean (s)</th><th>Total (s)</th><th>Prompt tok</th><th>Compl. tok</th></tr></thead>
+            <tbody>${stages.map(([name, st]) => `
+              <tr><td><strong>${esc(name)}</strong></td>
+                <td>${st.calls}</td><td>${st.ok}</td>
+                <td class="mono">${(st.mean_duration_s||0).toFixed(2)}</td>
+                <td class="mono">${(st.total_duration_s||0).toFixed(2)}</td>
+                <td class="mono">${st.prompt_tokens}</td>
+                <td class="mono">${st.completion_tokens}</td>
+              </tr>`).join('')}</tbody>
+          </table>
+        </div>`;
+      }
+
+      let provHtml = '';
+      if (manifest) {
+        const i = manifest.input || {};
+        const c = manifest.config || {};
+        provHtml = `<div class="section-card">
+          <h3>Provenance <span style="font-size:.72rem;color:var(--muted)">run_manifest.json</span></h3>
+          <div class="ds2-prov-grid">
+            <span class="ds2-prov-key">Input</span><span class="ds2-prov-val">${esc(i.path || '—')}</span>
+            <span class="ds2-prov-key">SHA-256</span><span class="ds2-prov-val">${esc((i.sha256 || '').slice(0,16))}…</span>
+            <span class="ds2-prov-key">Dataset</span><span class="ds2-prov-val">${esc(i.dataset || '—')}</span>
+            <span class="ds2-prov-key">Threshold</span><span class="ds2-prov-val">${c.anomaly_threshold}</span>
+            <span class="ds2-prov-key">Seed</span><span class="ds2-prov-val">${c.seed}</span>
+            <span class="ds2-prov-key">SLM</span><span class="ds2-prov-val">${esc(c.slm_model || '—')}</span>
+            <span class="ds2-prov-key">Judge</span><span class="ds2-prov-val">${esc(c.judge_model || '—')}</span>
+            <span class="ds2-prov-key">Use KB</span><span class="ds2-prov-val">${c.use_kb}</span>
+            <span class="ds2-prov-key">Max LLM calls</span><span class="ds2-prov-val">${c.max_llm_calls ?? '∞'}</span>
+            <span class="ds2-prov-key">Git commit</span><span class="ds2-prov-val">${esc((manifest.git_commit || '').slice(0,8) || '—')}</span>
+          </div>
+        </div>`;
+      }
+
+      emptyState.style.display = 'none';
+      detailContent.style.display = '';
+      detailContent.innerHTML = `
+        <div class="section-card">
+          <h3>DualSentinel · sumário da execução</h3>
+          <div class="ds2-stat-grid">
+            <div class="stat-box"><div class="stat-label">Janelas</div><div class="stat-value">${windows.length}</div></div>
+            <div class="stat-box"><div class="stat-label">Acima do threshold</div><div class="stat-value">${flagged}</div></div>
+            <div class="stat-box"><div class="stat-label">Judged</div><div class="stat-value">${judgeResults.length}</div></div>
+            <div class="stat-box"><div class="stat-label">Malicious</div><div class="stat-value" style="color:#fca5a5">${verdictCounts.malicious}</div></div>
+            <div class="stat-box"><div class="stat-label">Suspicious</div><div class="stat-value" style="color:#fde68a">${verdictCounts.suspicious}</div></div>
+            <div class="stat-box"><div class="stat-label">Normal</div><div class="stat-value" style="color:#86efac">${verdictCounts.normal}</div></div>
+          </div>
+          <div style="margin-top:8px;font-size:.74rem;color:var(--muted)">${esc(data.output_dir || '')}</div>
+        </div>
+        ${metricsHtml}${teleHtml}${provHtml}
+        <div class="section-card" style="text-align:center;color:var(--muted);font-size:.84rem">
+          ← Abre o separador <strong>Resultados</strong> e seleciona uma janela para ver o detalhe.
+        </div>`;
+    }
+
+    function selectDs2Chain(idx) {
+      activeChainIdx = idx;
+      document.querySelectorAll('.chain-item').forEach((el, i) => el.classList.toggle('active', i === idx));
+      const c = allChains[idx];
+      const jr  = c._judge;
+      const win = c._window;
+
+      const verdictHtml = jr
+        ? `<span class="verdict-badge ${verdictClass(jr.verdict)}">${esc(jr.verdict)}</span>`
+        : `<span class="verdict-badge verdict-suspicious">detector only</span>`;
+      const fpHtml = jr ? `<span class="${fpClass(jr.fp_risk)}">${esc(jr.fp_risk || '—')}</span>` : '—';
+      const scoreDisplay = jr ? `${jr.anomaly_score}/10` : c.peak_score.toFixed(3);
+      const windowRange = jr
+        ? `${jr.window_start.replace('T',' ').slice(0,19)} → ${jr.window_end.replace('T',' ').slice(0,19)}`
+        : (win ? `${win.window_start} → ${win.window_end}` : '—');
+
+      const techniques = jr ? (jr.techniques || []) : (win ? (win.attck_hits || []) : []);
+      const techHtml = techniques.length
+        ? techniques.map(t => {
+            const tid   = t.technique_id || t.technique || '—';
+            const tname = t.name || '—';
+            const tconf = t.confidence || t.source || '—';
+            const tevid = t.evidence || '';
+            return `<div class="technique-chip">
+              <span class="technique-id">${esc(tid)}</span>
+              <span class="technique-name">${esc(tname)}</span>
+              <span class="technique-conf">confiança: ${esc(String(tconf))}</span>
+              ${tevid ? `<span class="technique-evidence">${esc(tevid.slice(0, 180))}</span>` : ''}
+            </div>`;
+          }).join('')
+        : '<span style="color:var(--muted);font-size:.84rem">Nenhuma técnica identificada.</span>';
+
+      const slmFailed = jr && jr.slm_summary && /did not return parseable|parse error|parse failed/i.test(jr.slm_summary);
+      const llmHtml = jr ? `
+        <div class="attr-field"><div class="attr-label">Rationale</div>
+          <div class="attr-val">${esc(jr.rationale || '—')}</div></div>
+        ${jr.recommended_action ? `<div class="attr-field"><div class="attr-label">Recommended Action</div>
+          <div class="attr-val" style="color:#a7f3d0">${esc(jr.recommended_action)}</div></div>` : ''}
+        ${jr.slm_summary ? `<div class="attr-field"><div class="attr-label">SLM Pre-Diagnosis</div>
+          <div class="attr-val" style="${slmFailed ? 'color:#fde68a;font-style:italic' : ''}">
+            ${slmFailed ? '⚠ ' : ''}${esc(jr.slm_summary)}
+          </div></div>` : ''}
+        ${jr.unsupported_claims && jr.unsupported_claims.length ? `<div class="attr-field">
+          <div class="attr-label">Unsupported Claims Flagged</div>
+          <div class="attr-val" style="color:#fde68a">${jr.unsupported_claims.map(s => esc(s)).join(', ')}</div></div>` : ''}
+        ${!slmFailed ? `<div class="attr-field"><div class="attr-label">SLM Score</div>
+          <div class="attr-val"><strong style="color:#67e8f9">${jr.slm_pre_score ?? '—'}</strong>/10</div></div>` : ''}
+        <div class="attr-field"><div class="attr-label">Modelo / Latência</div>
+          <div class="attr-val" style="font-size:.78rem;color:var(--muted)">
+            <code>${esc(jr.model_used || '—')}</code>
+            ${jr.latency_s ? ` · ${parseFloat(jr.latency_s).toFixed(1)}s` : ''}
+          </div></div>`
+        : '<span style="color:var(--muted);font-size:.84rem">LLM Judge não foi executado.</span>';
+
+      // KB Candidates: top-k retrieved from ATT&CK KB (source=kb), shown to expose
+      // the hypothesis space the Judge had access to (not only what it picked).
+      const kbCandidates = win ? (win.attck_hits || []).filter(h => h.source === 'kb') : [];
+      const pickedIds = new Set(jr ? (jr.techniques || []).map(t => t.technique_id || t.technique) : []);
+      const kbHtml = kbCandidates.length
+        ? kbCandidates.slice(0, 10).map(h => {
+            const tid = h.technique_id || h.technique || '—';
+            const picked = pickedIds.has(tid);
+            return `<span class="technique-id" style="margin:2px;padding:2px 8px;border-radius:6px;
+              background:${picked ? 'rgba(103,232,249,.18)' : 'rgba(255,255,255,.05)'};
+              border:1px solid ${picked ? '#67e8f9' : 'rgba(255,255,255,.1)'};
+              color:${picked ? '#67e8f9' : 'var(--muted)'};font-size:.74rem"
+              title="${picked ? 'escolhida pelo Judge' : 'candidata da KB (não escolhida)'}">${esc(tid)}</span>`;
+          }).join('')
+        : '';
+
+      const summaries = win ? (win.event_summaries || []) : [];
+      const eventsHtml = summaries.length
+        ? `<div class="event-summary-list">${summaries.slice(0, 60).map(s =>
+            `<div class="event-summary-row">${esc(s)}</div>`).join('')}</div>
+          ${summaries.length > 60 ? `<div style="color:var(--muted);font-size:.74rem;margin-top:4px">+${summaries.length - 60} eventos adicionais</div>` : ''}`
+        : '<span style="color:var(--muted);font-size:.84rem">Dados de eventos não disponíveis.</span>';
+
+      emptyState.style.display = 'none';
+      detailContent.style.display = '';
+      detailContent.innerHTML = `
+        <div class="section-card">
+          <h3>DualSentinel &nbsp;·&nbsp; Janela ${idx + 1}</h3>
+          <div class="summary-grid">
+            <div class="stat-box"><div class="stat-label">Score</div><div class="stat-value">${esc(scoreDisplay)}</div></div>
+            <div class="stat-box"><div class="stat-label">Verdict</div><div class="stat-value" style="font-size:.88rem">${verdictHtml}</div></div>
+            <div class="stat-box"><div class="stat-label">FP Risk</div><div class="stat-value" style="font-size:.9rem">${fpHtml}</div></div>
+          </div>
+          <div style="margin-top:10px;font-size:.8rem;color:var(--muted)">${esc(windowRange)}</div>
+          ${win ? `<div class="eid-row" style="margin-top:8px">
+            <span class="eid-chip">Events: ${parseInt(win.event_count || 0)}</span>
+            <span class="eid-chip">Detector: ${parseFloat(win.detector_score || 0).toFixed(3)}</span>
+            ${win.baseline_features ? `<span class="eid-chip">Emb dist: ${parseFloat(win.baseline_features.embedding_distance || 0).toFixed(3)}</span>` : ''}
+          </div>` : ''}
+        </div>
+        <div class="section-card"><h3>ATT&amp;CK Techniques</h3>
+          <div style="display:flex;flex-wrap:wrap">${techHtml}</div></div>
+        ${kbHtml ? `<div class="section-card">
+          <h3>RAG Candidates <span style="font-size:.7rem;color:var(--muted);font-weight:400">
+            (top-${kbCandidates.length} da KB ATT&amp;CK · destaque = escolhida pelo Judge)</span></h3>
+          <div style="display:flex;flex-wrap:wrap">${kbHtml}</div></div>` : ''}
+        <div class="section-card"><h3>Análise LLM</h3>
+          <div class="attr-result">${llmHtml}</div></div>
+        <div class="section-card">
+          <h3>Eventos da Janela <span style="font-size:.72rem;color:var(--muted)">(${summaries.length} total)</span></h3>
+          ${eventsHtml}
+        </div>`;
+    }
+
+    // ── Init ───────────────────────────────────────────────────────────────
+    refreshStatusBar();
+    setInterval(refreshStatusBar, 30000);
+    renderRunForm();
+  </script>
+</body>
+</html>

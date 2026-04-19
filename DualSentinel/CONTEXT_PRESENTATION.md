@@ -37,17 +37,31 @@ Logs Windows (EVTX / CSV)
         │
         ▼
 [ Pré-processamento ]
-  → Parse e normalização de campos Sysmon
+  → Parse e normalização de campos Sysmon (schema canónico de 23 colunas)
   → Janelas temporais fixas de 60 segundos
-  → 17 features por janela (contagens, entropias, flags)
+  → Process chains: reconstrução de cadeias parent→child por process_guid
+  → Vetor de features por janela (112 dims):
+        • 21 base (contagens por EID, entropias, flags)
+        • 27 smart features semânticas (cmdline obfuscation, LOLBINs,
+          base64 blobs, hive distribution, suspicious registry paths,
+          path depth/temp/appdata, lateral port ratio, suspicious
+          parent→child pairs, …)
+        • 64 hash embeddings field-aware (cmdline / registry / process /
+          path, mean-pool por janela, 16 dims cada)
+  → Baseline self-supervised (centróide + token rarity por field) →
+        sinais de desvio expostos ao LLM
         │
         ▼
-[ 1.º Sentinela — Detectores Clássicos ]
-  → IsolationForest: anomaly score por janela (não supervisionado)
-  → GRU Autoencoder: erro de reconstrução em sequências de 10 janelas
-  → ATT&CK Rule Tagger: regras determinísticas por técnica
-  → Ensemble: 0.5×IF + 0.3×GRU + 0.2×Rules
-        │  (só janelas com score ≥ threshold)
+[ 1.º Sentinela — Detecção Heurística ]
+  → ATT&CK Rule Tagger: regras determinísticas por técnica (T1059, T1003, …)
+  → Retrieval híbrido na KB local (ChromaDB + BM25 com Reciprocal Rank Fusion):
+        candidatos a técnica MITRE com evidência textual
+  → Smart-feature flags: obfuscation, LOLBINs, suspicious paths/registry,
+        lateral port ratio, parent→child suspeitos
+  → Baseline deviation: distância ao centróide + token rarity por field
+  → Heuristic score ∈ [0, 1]: rule hits âncora (≥0.5) + KB candidates
+        + smart flags + baseline deviation
+        │  (só janelas com score ≥ threshold escalam)
         ▼
 [ 2.º Sentinela — Análise por LLM local ]
   → SLM Analyst (Phi-3 Medium, ~8GB, Ollama):
@@ -72,28 +86,55 @@ O padrão SLM→LLM é uma forma de *chain-of-thought* guiado: o Phi-3 é barato
 ### 4.1 Pré-processamento
 
 - Suporte a ficheiros `.evtx` (binário Windows) e `.csv` (LMD-2023, Splunk Attack Data, SILRAD).
-- Normalização de nomes de colunas para um schema canónico (`timestamp`, `event_id`, `process_name`, etc.).
+- Normalização de nomes de colunas para um **schema canónico de 23 campos** (`timestamp`, `event_id`, `process_name`, `command_line`, `registry_key`, `network_dest_port`, etc.). Síntese de `process_guid` quando o dataset não o fornece.
 - Fallback automático de `utctime` para `systemtime` quando o campo principal está corrompido (como no LMD-2023 Normal).
 - Filtragem para EventIDs relevantes: 1, 3, 5, 6, 7, 8, 10, 11, 12, 13, 15, 16, 17, 18, 22, 23, 25.
-- Feature engineering por janela: contagens de eventos, processos suspeitos, portas de lateral movement, entropias de Shannon, IPs únicos.
+- **Process chains**: agrupamento de eventos por `process_guid` para reconstruir cadeias parent→child com timestamps e duração — fornecidas ao LLM como ordered timeline.
 
-### 4.2 IsolationForest
+#### 4.1.1 Feature engineering por janela (vetor de 112 dims)
 
-Modelo one-class não supervisionado: não precisa de dados rotulados. Treina sobre os próprios dados de input (assumindo 5% de contaminação) e normaliza os scores para [0,1]. É a âncora principal do ensemble (peso 0.5).
+Cada janela é representada pela concatenação de três blocos:
 
-### 4.3 GRU Autoencoder
+| Bloco | Dims | Conteúdo |
+|---|---|---|
+| **Base** | 21 | Contagens por EventID, processos suspeitos, lateral movement port count, entropias de Shannon (event_id, process), flags (mimikatz, psexec) |
+| **Smart features** | 27 | Indicadores semânticos derivados — não são counts brutos: obfuscation regex hits no cmdline, LOLBIN calls (certutil, mshta, …), base64 blobs longos, flag density, hive distribution (HKLM/HKCU), suspicious registry subpaths (Run, Winlogon, IFEO, …), path depth, temp/appdata/system32 ratios, executable writes, lateral port ratio, suspicious parent→child pairs (ex.: `winword.exe → powershell.exe`) |
+| **Field-aware embeddings** | 64 | `HashingVectorizer` (sklearn, sem dependências externas) sobre cada campo — command_line, registry_key, process_name, file_path — tokenizadores próprios por campo (paths splitados, hives canonicalizados, ports categorizadas em well_known/registered/dynamic/lateral). Mean-pool por janela + sum-bucket reduction para 16 dims cada |
 
-Modelo PyTorch que aprende a reconstruir sequências de 10 janelas consecutivas. Alto erro de reconstrução indica que a janela quebra o padrão temporal — útil para detetar movimentos laterais lentos. Threshold automático no percentil 95 do treino.
+Acima do vetor, a janela é **anotada com sinais de baseline self-supervised** (não fazem parte do feature vector, mas são entregues ao LLM):
 
-### 4.4 ATT&CK Rule Tagger
+- Distância do embedding ao centróide médio das janelas (proxy para "este conjunto destoa do bulk").
+- Token rarity ratio por campo: fração de tokens nesta janela que apareceram ≤1 vez na baseline (`cmdline_rare_token_ratio`, `registry_rare_token_ratio`, …).
 
-Regras determinísticas mapeadas a técnicas MITRE (T1059.001 PowerShell, T1003 Credential Dumping, T1486 Ransomware, etc.). Corre sempre, mesmo quando os detectores ML são desligados com `--skip-detectors`.
+A premissa benigna é a mesma do IsolationForest (contaminação ~5%); quando há labels, o `fit()` aceita máscara para refinar.
 
-### 4.5 SLM Analyst (Phi-3 Medium)
+### 4.2 Heuristic Scorer
 
-Recebe o *evidence pack* da janela (metadata + até 50 eventos resumidos + hits das regras). Produz um pré-diagnóstico estruturado em JSON com score preliminar, técnicas suspeitas e indicadores. Usa `format="json"` da API Ollama para forçar output válido.
+Funde quatro sinais num único `detector_score ∈ [0, 1]` que decide se a janela escala para a fase LLM:
 
-### 4.6 LLM Judge (Llama 3.1)
+| Sinal | Peso/Limite | Justificação |
+|---|---|---|
+| **Rule hits** (regras determinísticas) | âncora ≥0.5 + 0.4×max(confidence) | Sinal auditado, não probabilístico |
+| **KB candidates** (retrieval híbrido) | +0.05 por hit, cap 0.15 | Retrieval ≠ confirmação |
+| **Smart-feature flags** (7 indicadores) | +0.08 por flag ativa | obfuscation, LOLBINs, base64 blobs, suspicious paths/registry, lateral ports, parent→child |
+| **Baseline deviation** | +0.15×emb_dist + 0.10×max rare ratio | Capta janelas novas que nenhuma regra dispara |
+
+Optação consciente por **não usar IsolationForest nem GRU**: esses modelos clássicos não trazem ganho útil sobre o sinal já codificado nas regras MITRE + smart features + baseline (verificado empiricamente nos datasets), e produzem um score numérico opaco que o LLM Judge não pode auditar. Cada componente do score heurístico é inspecionável — alinhado com o objetivo de gerar diagnósticos auditáveis.
+
+### 4.3 ATT&CK Rule Tagger + KB Híbrida
+
+Duas fontes de candidatos a técnica MITRE, fundidas no evidence pack:
+
+1. **Regras determinísticas** mapeadas a técnicas MITRE (T1059.001 PowerShell, T1003 Credential Dumping, T1486 Ransomware, etc.). Apresentadas ao LLM como *confirmadas*.
+2. **Retrieval híbrido na KB local** (ChromaDB + BM25, fundidos por Reciprocal Rank Fusion sobre 3463 entradas indexadas — Atomic Red Team, Sigma rules, ATT&CK descriptions). Apresentadas ao LLM como *candidatos não confirmados*, com a evidência textual que justificou a recuperação.
+
+Esta separação "confirmado vs candidato" é deliberada: o Judge pode descartar candidatos sem fundamento sem inflacionar falsos positivos.
+
+### 4.4 SLM Analyst (Phi-3 Medium)
+
+Recebe o *evidence pack* da janela com metadata, contagens base, **smart features ativos** (cmdline obfuscation, LOLBINs, suspicious paths…), **desvios à baseline** (distância ao centróide, rare token ratios), hits de regras, candidatos da KB, **peak process chain** ordenada cronologicamente, e até 50 eventos resumidos. Produz um pré-diagnóstico estruturado em JSON com score preliminar, técnicas suspeitas e indicadores. Usa `format="json"` da API Ollama para forçar output válido.
+
+### 4.5 LLM Judge (Llama 3.1)
 
 Recebe o mesmo evidence pack + o pré-diagnóstico do Phi-3 como hipótese. Valida cada claim com referências explícitas aos eventos. Produz score final 0-10, veredicto (normal/suspicious/malicious), mapeamento ATT&CK com evidências, e risco de falso positivo. Usa rubrica de scoring injetada no system prompt.
 
@@ -104,12 +145,12 @@ Recebe o mesmo evidence pack + o pré-diagnóstico do Phi-3 como hipótese. Vali
 | Decisão | Justificação |
 |---|---|
 | Janelas de 60 segundos | Granularidade natural para ataques; compromisso entre contexto e velocidade |
-| IsolationForest one-class | Não requer labels; adapta-se ao dataset de input |
-| Ensemble ponderado | IF mais fiável; GRU captura padrões temporais; regras são conservadoras |
+| Heuristic scorer (rules + smart features + baseline) em vez de IsolationForest/GRU | Cada termo é auditável pelo Judge; modelos clássicos opacos não acrescentam ganho útil sobre os sinais codificados |
+| Baseline self-supervised | Capta janelas novas sem regras; não requer labels; mesma premissa de bulk-of-windows que IForest assumia |
 | Dois LLMs em cadeia | Reduz alucinações; o Judge tem uma hipótese para validar, não parte do zero |
 | Todos os LLMs locais (Ollama) | Dados sensíveis não saem da máquina; sem custos de API; reprodutível offline |
 | `format="json"` na API Ollama | Decoding constrained; elimina respostas em prosa ou vazias |
-| `--skip-detectors` + `--threshold` | Flexibilidade para comparar modos: IForest+GRU vs só rule tagger |
+| KB híbrida (Chroma + BM25, RRF) | Combina semântica densa com matching exato de tokens raros; sem dependências externas |
 
 ---
 
@@ -126,7 +167,9 @@ Recebe o mesmo evidence pack + o pré-diagnóstico do Phi-3 como hipótese. Vali
 ## 7. Resultados Esperados e Avaliação
 
 Para cada execução o pipeline gera:
-- `windows_scored.json` — todas as janelas com scores dos detectores
+- `windows_scored.json` — todas as janelas com scores dos detectores, smart features, baseline deviation, ATT&CK hits e peak chain
+- `chains.json` — todas as process chains reconstruídas
+- `evidence_packs.json` — packs renderizados para janelas acima do threshold (debug aid e auditoria)
 - `slm_analyses.json` — pré-diagnósticos do Phi-3 por janela
 - `judge_results.json` — veredictos finais do Llama 3.1
 - `report_<dataset>_<ts>.md` — relatório Markdown com sumário, técnicas top-10, janelas de alto risco
@@ -141,6 +184,7 @@ Este trabalho contribui com:
 
 1. **Pipeline integrado** que combina deteção clássica (sem labels) com análise semântica por LLMs — abordagem não explorada na literatura revista.
 2. **Cadeia SLM→LLM** como estratégia anti-alucinação aplicada a cibersegurança.
-3. **Mapeamento ATT&CK auditável** — cada técnica identificada inclui a evidência concreta do log que a suporta.
-4. **Robustez a dados reais** — tratamento de timestamps corrompidos, schemas heterogéneos, e ficheiros de grande dimensão (1.75M eventos).
-5. **Execução totalmente local** — sem dependências de APIs externas, compatível com ambientes de segurança isolados.
+3. **Feature engineering field-aware** para Sysmon: tokenizadores e embeddings por campo (cmdline, registry, process, path, ports) + 27 features semânticas que vão para além de counts e entropias, incluindo baseline self-supervised de raridade de tokens e distância ao centróide.
+4. **Mapeamento ATT&CK auditável com retrieval híbrido** — cada técnica identificada inclui a evidência concreta do log; KB local (ChromaDB + BM25, RRF) separa hits confirmados de candidatos.
+5. **Robustez a dados reais** — tratamento de timestamps corrompidos, schemas heterogéneos, e ficheiros de grande dimensão (1.75M eventos).
+6. **Execução totalmente local** — sem dependências de APIs externas, compatível com ambientes de segurança isolados.

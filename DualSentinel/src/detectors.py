@@ -430,7 +430,67 @@ def ensemble_score(
     """
     Combina os três sinais num score final [0, 1].
     weights = (iforest_w, gru_w, rule_w)
+
+    DEPRECATED — kept only for backwards compatibility with notebooks/tests.
+    The pipeline now uses :func:`heuristic_score`, which fuses ATT&CK rule
+    hits, KB candidates, smart features and baseline deviation without
+    requiring IForest / GRU.
     """
     rule_score = 1.0 if has_attck_hits else 0.0
     total = weights[0] * iforest_score + weights[1] * gru_score + weights[2] * rule_score
     return float(np.clip(total, 0.0, 1.0))
+
+
+def heuristic_score(window: dict) -> float:
+    """Fuses the four detector signals — ATT&CK rule hits, KB retrieval
+    candidates, smart-feature indicators and baseline deviation — into a
+    single anomaly score in [0, 1].
+
+    Design choices:
+        - A confirmed rule hit alone anchors the score at ≥ 0.5 (it is a
+          deterministic, audited signal).
+        - KB candidates are weaker (retrieval ≠ confirmation) — capped at
+          +0.15.
+        - Smart-feature flags (obfuscation, LOLBINs, suspicious paths,
+          lateral ports, suspicious parent→child pairs) each add +0.08.
+        - Baseline deviation (centroid distance + rare token ratio) adds
+          up to +0.25 — surfaces novel windows that no rule fires on.
+    """
+    score = 0.0
+
+    hits = window.get("attck_hits", []) or []
+    rule_hits = [h for h in hits if h.get("source", "rule") == "rule"]
+    kb_hits   = [h for h in hits if h.get("source") == "kb"]
+    if rule_hits:
+        max_conf = max(float(h.get("confidence", 0.5)) for h in rule_hits)
+        score += 0.5 + 0.4 * max_conf + 0.05 * (len(rule_hits) - 1)
+    score += min(0.15, 0.05 * len(kb_hits))
+
+    smart = window.get("smart_features", {}) or {}
+    smart_signals = [
+        smart.get("cmdline_obfuscation_hits", 0) > 0,
+        smart.get("cmdline_lolbin_calls", 0) > 0,
+        smart.get("cmdline_b64_blob_count", 0) > 0,
+        smart.get("reg_suspicious_path_hits", 0) > 0,
+        smart.get("path_executable_writes", 0) > 0 and (
+            smart.get("path_temp_ratio", 0) > 0
+            or smart.get("path_appdata_ratio", 0) > 0
+        ),
+        float(smart.get("port_lateral_ratio", 0)) >= 0.3,
+        smart.get("proctree_suspicious_pairs", 0) > 0,
+    ]
+    score += 0.08 * sum(smart_signals)
+
+    baseline = window.get("baseline_features", {}) or {}
+    rare_max = max(
+        (float(baseline.get(k, 0.0)) for k in (
+            "cmdline_rare_token_ratio", "registry_rare_token_ratio",
+            "process_rare_token_ratio", "path_rare_token_ratio",
+        )),
+        default=0.0,
+    )
+    # emb distance is unbounded; ~1.5 is "very far" for L2-normalised hash buckets
+    emb_dev = min(1.0, float(baseline.get("emb_distance_to_baseline", 0.0)) / 1.5)
+    score += 0.15 * emb_dev + 0.10 * rare_max
+
+    return float(np.clip(score, 0.0, 1.0))

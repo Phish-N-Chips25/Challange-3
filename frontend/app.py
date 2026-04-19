@@ -6,6 +6,7 @@ Detection  : detection_service.py (TransformerAE + single-event AE + RAG + Ollam
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import traceback
@@ -1092,6 +1093,16 @@ def dashboard():
     return resp
 
 
+@app.get("/dualsentinel")
+def dualsentinel_page():
+    nome = session.get("auth_name")
+    if not nome:
+        return redirect(url_for("home"))
+    resp = app.make_response(render_template("dualsentinel.html", nome=nome))
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return resp
+
+
 @app.post("/logout")
 def logout():
     session.pop("auth_name", None)
@@ -1168,7 +1179,18 @@ def api_attribute(chain_id: int):
 
 # ── DualSentinel API ──────────────────────────────────────────────────────────
 
-def _ds2_run_bg(run_id: str, file_path: Path, dataset: str, threshold: float, skip_judge: bool, max_rows: int | None = None) -> None:
+def _ds2_run_bg(
+    run_id: str,
+    file_path: Path,
+    dataset: str,
+    threshold: float,
+    skip_judge: bool,
+    max_rows: int | None = None,
+    max_llm_calls: int | None = None,
+    use_kb: bool = True,
+    evaluate: bool = False,
+    seed: int = 42,
+) -> None:
     """Background thread: run DualSentinel pipeline and store result in _ds2_runs."""
     with _ds2_lock:
         _ds2_runs[run_id]["status"]  = "running"
@@ -1185,6 +1207,10 @@ def _ds2_run_bg(run_id: str, file_path: Path, dataset: str, threshold: float, sk
             threshold=threshold,
             skip_judge=skip_judge,
             max_rows=max_rows,
+            max_llm_calls=max_llm_calls,
+            use_kb=use_kb,
+            evaluate=evaluate,
+            seed=seed,
         )
         with _ds2_lock:
             _ds2_runs[run_id]["status"]  = "done"
@@ -1225,6 +1251,11 @@ def api_ds2_run():
     skip_judge = bool(body.get("skip_judge", False))
     max_rows_raw = body.get("max_rows")
     max_rows: int | None = int(max_rows_raw) if max_rows_raw else None
+    max_llm_calls_raw = body.get("max_llm_calls")
+    max_llm_calls: int | None = int(max_llm_calls_raw) if max_llm_calls_raw else None
+    use_kb     = bool(body.get("use_kb", True))
+    evaluate   = bool(body.get("evaluate", False))
+    seed       = int(body.get("seed") or 42)
 
     if not rel_file:
         return jsonify({"error": "file is required"}), 400
@@ -1246,7 +1277,8 @@ def api_ds2_run():
 
     t = threading.Thread(
         target=_ds2_run_bg,
-        args=(run_id, file_path, dataset, threshold, skip_judge, max_rows),
+        args=(run_id, file_path, dataset, threshold, skip_judge, max_rows,
+              max_llm_calls, use_kb, evaluate, seed),
         daemon=True,
         name=f"ds2-{run_id[:8]}",
     )
@@ -1288,12 +1320,178 @@ def api_ds2_results(run_id: str):
             return _coerce(o.tolist())
         return o
 
+    # Read sidecar artefacts (metrics / telemetry / manifest) if produced
+    out_dir = Path(result.get("output_dir", "")) if result.get("output_dir") else None
+    sidecars: dict = {}
+    if out_dir and out_dir.exists():
+        for key, fname in (("metrics", "metrics.json"),
+                           ("telemetry", "telemetry.json"),
+                           ("manifest", "run_manifest.json")):
+            fp = out_dir / fname
+            if fp.exists():
+                try:
+                    sidecars[key] = json.loads(fp.read_text(encoding="utf-8"))
+                except Exception:
+                    sidecars[key] = None
+
     return jsonify(_coerce({
         "windows":       result.get("windows", []),
         "judge_results": result.get("judge_results", []),
         "output_dir":    result.get("output_dir", ""),
         "report":        result.get("report", ""),
+        "metrics":       sidecars.get("metrics"),
+        "telemetry":     sidecars.get("telemetry"),
+        "manifest":      sidecars.get("manifest"),
     }))
+
+
+# ── DualSentinel: health, history, persisted-results helpers ──────────────────
+
+_DS2_RESULTS_DIR = Path(__file__).resolve().parent.parent / "DualSentinel" / "results"
+
+
+def _ds2_run_summary(run_dir: Path) -> dict | None:
+    """Inspect a results/<run_id>/ folder and produce a compact summary."""
+    if not run_dir.is_dir():
+        return None
+    manifest_fp = run_dir / "run_manifest.json"
+    judge_fp    = run_dir / "judge_results.json"
+    windows_fp  = run_dir / "windows_scored.json"
+    metrics_fp  = run_dir / "metrics.json"
+    summary: dict = {
+        "run_id":      run_dir.name,
+        "timestamp":   "",
+        "windows":     None,
+        "judged":      0,
+        "has_metrics": metrics_fp.exists(),
+    }
+    if manifest_fp.exists():
+        try:
+            mf = json.loads(manifest_fp.read_text(encoding="utf-8"))
+            summary["timestamp"] = mf.get("timestamp") or mf.get("started_at") or ""
+        except Exception:
+            pass
+    if not summary["timestamp"]:
+        try:
+            from datetime import datetime
+            summary["timestamp"] = datetime.fromtimestamp(run_dir.stat().st_mtime).isoformat()
+        except Exception:
+            pass
+    if windows_fp.exists():
+        try:
+            summary["windows"] = len(json.loads(windows_fp.read_text(encoding="utf-8")))
+        except Exception:
+            pass
+    if judge_fp.exists():
+        try:
+            summary["judged"] = len(json.loads(judge_fp.read_text(encoding="utf-8")))
+        except Exception:
+            pass
+    return summary
+
+
+@app.get("/api/dualsentinel/health")
+def api_ds2_health():
+    """DualSentinel-specific health: Ollama up, models pulled, KB ready, last run."""
+    slm_model   = os.getenv("SLM_MODEL",   "phi3:medium")
+    judge_model = os.getenv("JUDGE_MODEL", "llama3.1")
+
+    ollama_up = False
+    installed: list = []
+    try:
+        ollama_up, installed = _ds.check_ollama(OLLAMA_BASE_URL, slm_model)
+    except Exception:
+        pass
+
+    # check_ollama returns the bare model names; tag-stripped match is enough
+    def _has(model: str) -> bool:
+        if not installed:
+            return False
+        base = model.split(":")[0].lower()
+        return any(base == (m or "").split(":")[0].lower() for m in installed)
+
+    # KB
+    kb_ready = False
+    kb_count: int | None = None
+    try:
+        sys.path.insert(0, str(_DS_ROOT))
+        import attack_kb as _kb  # noqa: E402
+        kb_ready = _kb.is_available()
+        if kb_ready:
+            try:
+                vs = _kb._load_vector_store()  # noqa: SLF001
+                if vs is not None:
+                    kb_count = vs.get_collection().count()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Last run
+    last_run = None
+    if _DS2_RESULTS_DIR.exists():
+        runs = [p for p in _DS2_RESULTS_DIR.iterdir() if p.is_dir()]
+        if runs:
+            latest = max(runs, key=lambda p: p.stat().st_mtime)
+            last_run = _ds2_run_summary(latest)
+
+    return jsonify({
+        "ollama_up":       ollama_up,
+        "ollama_url":      OLLAMA_BASE_URL,
+        "slm_model":       slm_model,
+        "slm_available":   ollama_up and _has(slm_model),
+        "judge_model":     judge_model,
+        "judge_available": ollama_up and _has(judge_model),
+        "kb_ready":        kb_ready,
+        "kb_techniques":   kb_count,
+        "last_run":        last_run,
+    })
+
+
+@app.get("/api/dualsentinel/history")
+def api_ds2_history():
+    """List historical DualSentinel runs persisted under DualSentinel/results/."""
+    if not _DS2_RESULTS_DIR.exists():
+        return jsonify([])
+    runs = []
+    for p in sorted(_DS2_RESULTS_DIR.iterdir(), key=lambda d: d.stat().st_mtime, reverse=True):
+        s = _ds2_run_summary(p)
+        if s is not None:
+            runs.append(s)
+    return jsonify(runs[:50])
+
+
+@app.get("/api/dualsentinel/history/<run_id>")
+def api_ds2_history_run(run_id: str):
+    """Load a persisted run from disk by its directory name."""
+    if "/" in run_id or "\\" in run_id or run_id.startswith("."):
+        return jsonify({"error": "Invalid run_id"}), 400
+    run_dir = (_DS2_RESULTS_DIR / run_id).resolve()
+    try:
+        run_dir.relative_to(_DS2_RESULTS_DIR.resolve())
+    except ValueError:
+        return jsonify({"error": "Invalid run_id"}), 400
+    if not run_dir.is_dir():
+        return jsonify({"error": "Run not found"}), 404
+
+    def _load(name: str):
+        fp = run_dir / name
+        if not fp.exists():
+            return None
+        try:
+            return json.loads(fp.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+
+    return jsonify({
+        "windows":       _load("windows_scored.json") or [],
+        "judge_results": _load("judge_results.json")  or [],
+        "metrics":       _load("metrics.json"),
+        "telemetry":     _load("telemetry.json"),
+        "manifest":      _load("run_manifest.json"),
+        "output_dir":    str(run_dir),
+        "report":        "",
+    })
 
 
 if __name__ == "__main__":

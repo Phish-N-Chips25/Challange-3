@@ -431,7 +431,16 @@ def build_window_embedding(chunk) -> dict:
     smart.update(port_smart_features(port_list))
     smart.update(process_tree_features(parent_child))
 
-    return {"embedding": embedding, "smart_features": smart}
+    # Per-field flat token lists, retained so a later baseline pass can compute
+    # rarity scores without re-tokenising the raw frames.
+    field_tokens = {
+        "cmdline":  [t for c in cmd_list  for t in tokenize_cmdline(c)],
+        "registry": [t for r in reg_list  for t in tokenize_registry(r)],
+        "process":  [t for p in proc_list for t in tokenize_process(p)],
+        "path":     [t for p in path_list for t in tokenize_path(p)],
+    }
+
+    return {"embedding": embedding, "smart_features": smart, "field_tokens": field_tokens}
 
 
 SMART_FEATURE_NAMES = (
@@ -454,3 +463,95 @@ SMART_FEATURE_NAMES = (
 
 EMBEDDING_DIM = 64  # 4 campos × 16 dims
 SMART_FEATURE_DIM = len(SMART_FEATURE_NAMES)
+
+
+# ─────────────────────────────────────────────
+# Benign baseline (rarity + centroid distance)
+# ─────────────────────────────────────────────
+#
+# Self-supervised baseline: assumes the bulk of windows is benign (same
+# contamination assumption IsolationForest makes).  Computed *post* windowing
+# in two passes:
+#
+#   1. ``BenignBaseline.fit(windows)`` aggregates the benign centroid (mean of
+#      per-window embeddings) and a token-frequency table per field.
+#   2. ``BenignBaseline.score(window)`` returns four signals fed straight into
+#      the evidence pack — they tell the LLM "this window deviates from the
+#      bulk in ways X, Y, Z" without any new prompt engineering.
+#
+# These features intentionally live outside ``SMART_FEATURE_NAMES`` so the
+# IForest feature vector dimension stays stable across runs.
+
+BASELINE_FEATURE_NAMES = (
+    "emb_distance_to_baseline",
+    "cmdline_rare_token_ratio",
+    "registry_rare_token_ratio",
+    "process_rare_token_ratio",
+    "path_rare_token_ratio",
+)
+
+
+class BenignBaseline:
+    """Centroid + per-field token frequency table over (presumed benign) windows.
+
+    Optional ``benign_mask`` lets the caller restrict fitting to windows known
+    to be benign (e.g., low detector score, label==0).  When omitted, all
+    windows are used — the bulk dominates the centroid and rare attack tokens
+    naturally fall in the long tail.
+    """
+
+    RARE_THRESHOLD: int = 1   # token seen ≤ N times in baseline → "rare"
+
+    def __init__(self) -> None:
+        self.centroid: np.ndarray | None = None
+        self.token_counts: dict[str, Counter] = {
+            "cmdline": Counter(),
+            "registry": Counter(),
+            "process": Counter(),
+            "path": Counter(),
+        }
+        self.n_windows: int = 0
+
+    def fit(self, windows: list, benign_mask: list[bool] | None = None) -> "BenignBaseline":
+        if not windows:
+            return self
+        if benign_mask is None:
+            benign_mask = [True] * len(windows)
+        embeddings = []
+        for w, keep in zip(windows, benign_mask):
+            if not keep:
+                continue
+            emb = getattr(w, "embedding", None)
+            if emb is not None and getattr(emb, "size", 0) == EMBEDDING_DIM:
+                embeddings.append(emb)
+            for field_name, ctr in self.token_counts.items():
+                ctr.update(getattr(w, "_field_tokens", {}).get(field_name, []))
+        if embeddings:
+            self.centroid = np.mean(embeddings, axis=0).astype(np.float32)
+        self.n_windows = sum(benign_mask)
+        return self
+
+    def score(self, window) -> dict:
+        out: dict = dict.fromkeys(BASELINE_FEATURE_NAMES, 0.0)
+        emb = getattr(window, "embedding", None)
+        if emb is not None and self.centroid is not None and emb.size == self.centroid.size:
+            out["emb_distance_to_baseline"] = float(np.linalg.norm(emb - self.centroid))
+        field_tokens = getattr(window, "_field_tokens", {}) or {}
+        for field_name, key in (
+            ("cmdline",  "cmdline_rare_token_ratio"),
+            ("registry", "registry_rare_token_ratio"),
+            ("process",  "process_rare_token_ratio"),
+            ("path",     "path_rare_token_ratio"),
+        ):
+            toks = field_tokens.get(field_name, [])
+            if not toks:
+                continue
+            ctr = self.token_counts.get(field_name, Counter())
+            rare = sum(1 for t in toks if ctr.get(t, 0) <= self.RARE_THRESHOLD)
+            out[key] = rare / len(toks)
+        return out
+
+    def annotate(self, windows: list) -> None:
+        """In-place: writes ``window.baseline_features`` for every window."""
+        for w in windows:
+            w.baseline_features = self.score(w)

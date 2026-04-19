@@ -125,7 +125,8 @@ def summarise_event(row: dict | pd.Series) -> str:
     if cmd and cmd != "nan":
         parts.append(f"cmd={cmd[:120]}")
 
-    return " | ".join(parts).replace("```", "'''")
+    from utils import sanitize_for_prompt
+    return sanitize_for_prompt(" | ".join(parts), max_len=240)
 
 
 # ── Chain construction ──────────────────────────────────────────────────────

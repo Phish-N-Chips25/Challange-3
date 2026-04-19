@@ -34,7 +34,7 @@ from typing import Optional, TYPE_CHECKING
 import ollama
 from dotenv import load_dotenv
 
-from utils import build_evidence_pack
+from utils import build_evidence_pack, extract_json
 
 if TYPE_CHECKING:
     from slm_analyst import SLMAnalysis
@@ -91,6 +91,7 @@ OUTPUT (valid JSON only, no markdown fences):
     }
   ],
   "rationale": "<2-3 sentence summary>",
+  "recommended_action": "<1-2 sentence concrete next step for the SOC analyst (e.g. 'Isolate host X and collect memory dump', 'Tune detection rule Y', 'Mark as benign \u2014 routine admin activity')>",
   "unsupported_claims": [],
   "fp_risk": "high|medium|low"
 }\
@@ -109,6 +110,7 @@ class JudgeResult:
     verdict: str = "normal"
     techniques: list = field(default_factory=list)
     rationale: str = ""
+    recommended_action: str = ""
     unsupported_claims: list = field(default_factory=list)
     fp_risk: str = "low"
     detector_score: float = 0.0
@@ -116,6 +118,7 @@ class JudgeResult:
     slm_pre_score: int = 0
     slm_summary: str = ""
     model_used: str = JUDGE_MODEL
+    latency_s: float = 0.0
     error: Optional[str] = None
 
     def to_dict(self) -> dict:
@@ -213,6 +216,7 @@ class LLMJudge:
             user_content = f"Evaluate this log window:\n\n{pack}"
 
         for attempt in range(self.max_retries):
+            _t0 = __import__("time").perf_counter()
             try:
                 response = ollama.chat(
                     model=self.model,
@@ -223,19 +227,32 @@ class LLMJudge:
                     format="json",
                     options={"temperature": 0.1, "num_predict": 1024},
                 )
+                try:
+                    from provenance import TELEMETRY
+                    TELEMETRY.record(
+                        stage="judge", model=self.model,
+                        duration_s=__import__("time").perf_counter() - _t0,
+                        prompt_tokens=int(getattr(response, "prompt_eval_count", 0) or 0),
+                        completion_tokens=int(getattr(response, "eval_count", 0) or 0),
+                        ok=True,
+                    )
+                except Exception:
+                    pass
 
                 raw = response.message.content.strip()
 
                 if not raw:
                     raise json.JSONDecodeError("Empty response from model", "", 0)
 
-                parsed = self._extract_json(raw)
+                parsed = extract_json(raw)
                 result.anomaly_score = int(parsed.get("anomaly_score", 0))
                 result.verdict = parsed.get("verdict", "normal")
                 result.techniques = parsed.get("techniques", [])
                 result.rationale = parsed.get("rationale", "")
+                result.recommended_action = parsed.get("recommended_action", "")
                 result.unsupported_claims = parsed.get("unsupported_claims", [])
                 result.fp_risk = parsed.get("fp_risk", "low")
+                result.latency_s = round(__import__("time").perf_counter() - _t0, 2)
                 break
 
             except json.JSONDecodeError as e:

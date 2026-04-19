@@ -29,7 +29,7 @@ from typing import Optional
 import ollama
 from dotenv import load_dotenv
 
-from utils import build_evidence_pack
+from utils import build_evidence_pack, extract_json
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -112,7 +112,7 @@ class SLMAnalyst:
     def __init__(
         self,
         model: str = SLM_MODEL,
-        max_retries: int = 2,
+        max_retries: int = 3,
     ):
         self.model = model
         self.max_retries = max_retries
@@ -165,6 +165,7 @@ class SLMAnalyst:
         )
 
         for attempt in range(self.max_retries):
+            _t0 = __import__("time").perf_counter()
             try:
                 response = ollama.chat(
                     model=self.model,
@@ -176,14 +177,25 @@ class SLMAnalyst:
                         },
                     ],
                     format="json",
-                    options={"temperature": 0.1, "num_predict": 384},
+                    options={"temperature": 0.1, "num_predict": 768},
                 )
+                try:
+                    from provenance import TELEMETRY
+                    TELEMETRY.record(
+                        stage="slm", model=self.model,
+                        duration_s=__import__("time").perf_counter() - _t0,
+                        prompt_tokens=int(getattr(response, "prompt_eval_count", 0) or 0),
+                        completion_tokens=int(getattr(response, "eval_count", 0) or 0),
+                        ok=True,
+                    )
+                except Exception:
+                    pass
 
                 raw = response.message.content.strip()
-                if not raw:
+                if not raw or len(raw) < 2:
                     raise json.JSONDecodeError("Empty response from model", "", 0)
 
-                parsed = json.loads(raw)
+                parsed = extract_json(raw)
                 result.pre_score = int(parsed.get("pre_score", 0))
                 result.risk_level = parsed.get("risk_level", "low")
                 result.suspected_techniques = parsed.get("suspected_techniques", [])
@@ -193,13 +205,20 @@ class SLMAnalyst:
                 break
 
             except json.JSONDecodeError as e:
-                logger.warning(f"JSON parse error on attempt {attempt + 1}: {e}")
-                logger.debug(f"Raw SLM response was: {raw!r}")
+                # Log a truncated preview of the raw output so the user can diagnose
+                preview = (raw[:240].replace("\n", " ") + "…") if len(raw) > 240 else raw.replace("\n", " ")
+                logger.warning(
+                    "SLM JSON parse failed (attempt %d/%d): %s | raw=%r",
+                    attempt + 1, self.max_retries, e, preview,
+                )
                 if attempt == self.max_retries - 1:
                     result.error = f"JSON parse failed: {e}"
                     # Fallback: treat as needing deep analysis so the judge still runs
                     result.needs_deep_analysis = True
-                    result.summary = f"SLM parse error — escalating to judge: {e}"
+                    result.summary = (
+                        "SLM did not return parseable JSON for this window — "
+                        "the LLM Judge made the final decision."
+                    )
             except Exception as e:
                 logger.error(f"SLM analyst error on attempt {attempt + 1}: {e}")
                 if attempt == self.max_retries - 1:
@@ -214,22 +233,33 @@ class SLMAnalyst:
         self,
         windows: list[dict],
         threshold: float = 0.6,
+        max_calls: Optional[int] = None,
     ) -> list[SLMAnalysis]:
         """
         Análise em batch: filtra janelas por detector_score e analisa
         as de maior risco.
+
+        max_calls: se fornecido, limita o número de chamadas reais ao Ollama
+        (janelas trivially-benign continuam a ser pré-filtradas sem custo).
         """
         high_risk = [w for w in windows if w.get("detector_score", 0.0) >= threshold]
         high_risk.sort(key=lambda w: w.get("detector_score", 0.0), reverse=True)
 
+        cap_msg = f", max_calls={max_calls}" if max_calls is not None else ""
         logger.info(
             f"SLM analyst: {len(high_risk)}/{len(windows)} janelas "
-            f"acima do threshold ({threshold})"
+            f"acima do threshold ({threshold}){cap_msg}"
         )
 
         results = []
         ollama_calls = 0
         for i, w in enumerate(high_risk, 1):
+            if max_calls is not None and ollama_calls >= max_calls:
+                logger.info(
+                    f"SLM cap atingido ({max_calls} chamadas) — restantes "
+                    f"{len(high_risk) - i + 1} janelas ignoradas."
+                )
+                break
             r, called_ollama = self.analyse(w)
             results.append(r)
             if called_ollama:
@@ -240,10 +270,10 @@ class SLMAnalyst:
                 )
                 time.sleep(0.05)  # Yield only after real Ollama calls
 
-        pre_filtered = len(high_risk) - ollama_calls
+        pre_filtered = len(results) - ollama_calls
         logger.info(
             f"SLM complete: {ollama_calls} Ollama calls, "
-            f"{pre_filtered} pre-filtered as benign, {len(high_risk)} total"
+            f"{pre_filtered} pre-filtered as benign, {len(results)} total"
         )
         return results
 
