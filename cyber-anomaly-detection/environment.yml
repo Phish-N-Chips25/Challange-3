@@ -1,7 +1,7 @@
 name: cyber-anomaly
 channels:
-  - nvidia
   - pytorch
+  - nvidia
   - conda-forge
   - defaults
 dependencies:
@@ -9,11 +9,51 @@ dependencies:
   - pip
   - jupyterlab
   - ipykernel
-  - pandas
-  - numpy
-  - scikit-learn
+  # PyTorch with CUDA 12.6 — install from pytorch channel
   - pytorch
-  - torchvision
-  - pytorch-cuda=12.4
+  - pytorch-cuda=12.6
   - pip:
-      - -r requirements.txt
+      # ── Core data ──────────────────────────────────────────────────────────
+      - numpy>=1.26
+      - pandas>=2.2
+      - pyarrow>=15.0          # parquet I/O
+      - scikit-learn>=1.4
+      - joblib>=1.4
+      - psutil>=5.9
+      - tqdm>=4.66
+
+      # ── Gradient boosting (CASH experiments, nb06) ─────────────────────────
+      - xgboost>=2.0
+      - lightgbm>=4.0
+      - catboost>=1.2
+
+      # ── Hyperparameter optimisation ────────────────────────────────────────
+      - optuna>=3.6
+
+      # ── NLP / embeddings ───────────────────────────────────────────────────
+      - gensim>=4.3             # Word2Vec (single-event & sequence AE features)
+      - sentence-transformers>=3.0  # all-mpnet-base-v2 for RAG dense retrieval
+
+      # ── ATT&CK KB / RAG ───────────────────────────────────────────────────
+      - chromadb>=0.5           # vector store (dense retrieval)
+      - rank-bm25>=0.2          # BM25 sparse retrieval (hybrid RAG)
+      - pyyaml>=6.0             # OTRF / Splunk YAML metadata parsing
+
+      # ── LLM inference (Qwen 2.5 32B via Ollama HTTP) ──────────────────────
+      - requests>=2.32
+
+      # ── Experiment tracking ────────────────────────────────────────────────
+      - mlflow>=2.14
+
+      # ── Visualisation ─────────────────────────────────────────────────────
+      - matplotlib>=3.9
+      - seaborn>=0.13
+      - plotly>=5.22
+
+      # ── API server ────────────────────────────────────────────────────────
+      - fastapi>=0.111
+      - uvicorn[standard]>=0.30
+      - pydantic>=2.7
+
+      # ── Demo app ──────────────────────────────────────────────────────────
+      - streamlit>=1.36

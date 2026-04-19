@@ -1,0 +1,74 @@
+[
+  {
+    "model": "IsolationForest",
+    "strategy": "tfidf_svd",
+    "roc_auc": 0.9471,
+    "avg_precision": 0.4647,
+    "f1": 0.5617,
+    "tpr@1%fpr": 0.1314,
+    "tpr@0.1%fpr": 0.0241
+  },
+  {
+    "model": "MiniBatchKMeans",
+    "strategy": "tfidf_svd",
+    "roc_auc": 0.9772,
+    "avg_precision": 0.5279,
+    "f1": 0.7536,
+    "tpr@1%fpr": 0.1101,
+    "tpr@0.1%fpr": 0.0162
+  },
+  {
+    "model": "SGDOneClassSVM",
+    "strategy": "tfidf_svd",
+    "roc_auc": 0.8902,
+    "avg_precision": 0.2035,
+    "f1": 0.402,
+    "tpr@1%fpr": 0.0247,
+    "tpr@0.1%fpr": 0.0016
+  },
+  {
+    "model": "IsolationForest",
+    "strategy": "word2vec",
+    "roc_auc": 0.9629,
+    "avg_precision": 0.5352,
+    "f1": 0.712,
+    "tpr@1%fpr": 0.1317,
+    "tpr@0.1%fpr": 0.0372
+  },
+  {
+    "model": "MiniBatchKMeans",
+    "strategy": "word2vec",
+    "roc_auc": 0.9872,
+    "avg_precision": 0.6667,
+    "f1": 0.7808,
+    "tpr@1%fpr": 0.3542,
+    "tpr@0.1%fpr": 0.0183
+  },
+  {
+    "model": "SGDOneClassSVM",
+    "strategy": "word2vec",
+    "roc_auc": 0.8589,
+    "avg_precision": 0.168,
+    "f1": 0.3938,
+    "tpr@1%fpr": 0.0304,
+    "tpr@0.1%fpr": 0.0022
+  },
+  {
+    "model": "Autoencoder",
+    "strategy": "tfidf_svd",
+    "roc_auc": 0.9838,
+    "avg_precision": 0.6684,
+    "f1": 0.8004,
+    "tpr@1%fpr": 0.1315,
+    "tpr@0.1%fpr": 0.1205
+  },
+  {
+    "model": "Autoencoder",
+    "strategy": "word2vec",
+    "roc_auc": 0.9895,
+    "avg_precision": 0.7722,
+    "f1": 0.8213,
+    "tpr@1%fpr": 0.4283,
+    "tpr@0.1%fpr": 0.0771
+  }
+]
