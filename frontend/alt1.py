@@ -68,7 +68,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 # CONFIGURAÇÃO
 # ============================================================
 MODELO = "buffalo_sc"  # Trocar para buffalo_l se quiseres outra backbone
-THRESHOLD_PADRAO = 0.70
+THRESHOLD_PADRAO = 0.65
 # Usa caminho absoluto relativo a este ficheiro para evitar "base vazia" por CWD diferente.
 PASTA_BD_PADRAO = str((Path(__file__).resolve().parent / "pessoas_permitidas").resolve())
 DET_SIZE = (640, 640)

@@ -8,7 +8,7 @@ from insightface.app import FaceAnalysis
 # CONFIGURAÇÃO
 # ============================================================
 MODELO = 'buffalo_sc'          # Trocar de buffalo_sc para buffalo_l (ResNet-50 + ArcFace)
-THRESHOLD = 0.75               # Ajustar consoante resultados (ver scores no ecrã)
+THRESHOLD = 0.70               # Ajustar consoante resultados (ver scores no ecrã)
 PASTA_BD = "pessoas_permitidas"
 DET_SIZE = (640, 640)
 
