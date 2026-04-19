@@ -1,0 +1,31 @@
+{
+  "tfidf_svd": {
+    "n_layers": 3,
+    "ratio_0": 0.6782207880662962,
+    "ratio_1": 0.4928630332768462,
+    "ratio_2": 0.2639911094736292,
+    "latent_ratio": 0.05338377632373377,
+    "activation": "elu",
+    "use_batchnorm": true,
+    "lr": 0.003712872838619022,
+    "batch_size": 2048,
+    "dropout": 0.007111205065288263,
+    "weight_decay": 4.0285932899960984e-06,
+    "optimizer": "adamw"
+  },
+  "word2vec": {
+    "n_layers": 4,
+    "ratio_0": 0.49909402102015143,
+    "ratio_1": 0.4992450877717337,
+    "ratio_2": 0.6552566960596361,
+    "ratio_3": 0.45893722155060157,
+    "latent_ratio": 0.011717845895646822,
+    "activation": "elu",
+    "use_batchnorm": false,
+    "lr": 0.0017115379606876147,
+    "batch_size": 1024,
+    "dropout": 0.07445380972007656,
+    "weight_decay": 1.0366327165033836e-05,
+    "optimizer": "adam"
+  }
+}

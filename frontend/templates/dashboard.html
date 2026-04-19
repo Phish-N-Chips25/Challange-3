@@ -1,0 +1,463 @@
+<!doctype html>
+<html lang="pt">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Phish'N'Chips | SOC Dashboard</title>
+  <style>
+    :root {
+      --bg: #07131f; --card: rgba(15,23,42,0.9); --line: rgba(148,163,184,0.2);
+      --line-soft: rgba(148,163,184,0.12); --text: #e2e8f0; --muted: #94a3b8;
+      --accent: #67e8f9;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      min-height: 100vh;
+      font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      color: var(--text);
+      background: linear-gradient(135deg, #03111d, var(--bg) 55%, #10223a);
+      overflow-x: hidden;
+    }
+
+    /* ── Top bar ── */
+    .topbar {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 24px; border-bottom: 1px solid var(--line-soft);
+      background: rgba(7,19,31,0.85); backdrop-filter: blur(14px);
+      position: sticky; top: 0; z-index: 100;
+    }
+    .brand { display:flex; align-items:center; gap:10px; font-weight:700; font-size:1rem; }
+    .dot { width:10px; height:10px; border-radius:999px; background:var(--accent); box-shadow:0 0 12px rgba(125,211,252,0.9); }
+    .topbar-right { display:flex; align-items:center; gap:16px; font-size:.88rem; color:var(--muted); }
+    .user-chip {
+      display:flex; align-items:center; gap:8px; padding:6px 12px; border-radius:999px;
+      border:1px solid rgba(103,232,249,0.2); background:rgba(2,6,23,0.4); color:var(--text); font-size:.86rem;
+    }
+    .logout-btn {
+      padding:7px 14px; border-radius:8px; border:0; cursor:pointer; font-size:.86rem;
+      font-weight:600; color:#020617; background: linear-gradient(90deg, #7dd3fc, #c084fc);
+    }
+    .logout-btn:hover { filter:brightness(1.08); }
+
+    /* ── Status bar ── */
+    .statusbar {
+      display:flex; gap:10px; padding:10px 24px;
+      border-bottom:1px solid var(--line-soft); background:rgba(2,6,23,0.3); flex-wrap:wrap;
+    }
+    .status-chip {
+      display:inline-flex; align-items:center; gap:6px; padding:5px 10px; border-radius:999px;
+      font-size:.78rem; border:1px solid rgba(148,163,184,0.14); background:rgba(2,6,23,0.45);
+    }
+    .led { width:8px; height:8px; border-radius:999px; }
+    .led.green  { background:#4ade80; box-shadow:0 0 8px #4ade80; }
+    .led.yellow { background:#fbbf24; box-shadow:0 0 8px #fbbf24; }
+
+    /* ── Main layout ── */
+    .shell { display:grid; grid-template-columns:320px 1fr; height:calc(100vh - 92px); }
+    @media(max-width:900px) { .shell { grid-template-columns:1fr; height:auto; } }
+
+    /* ── Queue panel ── */
+    .queue-panel {
+      border-right:1px solid var(--line-soft); display:flex; flex-direction:column;
+      background:rgba(2,6,23,0.3); overflow:hidden;
+    }
+    .panel-head {
+      padding:14px 16px; border-bottom:1px solid var(--line-soft);
+      display:flex; align-items:center; justify-content:space-between;
+    }
+    .panel-head h2 { font-size:.9rem; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); }
+    .source-select {
+      padding:6px 10px; border-radius:8px; border:1px solid var(--line);
+      background:rgba(2,6,23,0.7); color:var(--text); font-size:.82rem; outline:none;
+    }
+    .chain-list { overflow-y:auto; flex:1; padding:8px; }
+    .chain-item {
+      padding:11px 13px; border-radius:12px; cursor:pointer; margin-bottom:6px;
+      border:1px solid transparent; background:rgba(15,23,42,0.5);
+      transition:border-color 150ms, background 150ms;
+    }
+    .chain-item:hover  { border-color:rgba(103,232,249,0.2); background:rgba(15,23,42,0.8); }
+    .chain-item.active { border-color:rgba(103,232,249,0.45); background:rgba(15,23,42,0.85); }
+    .chain-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:5px; }
+    .chain-gt { font-size:.88rem; font-weight:700; color:#f8fafc; }
+    .score-badge { font-size:.76rem; font-weight:700; padding:3px 8px; border-radius:999px; }
+    .score-high   { background:rgba(248,113,113,0.18); color:#fca5a5; border:1px solid rgba(248,113,113,0.3); }
+    .score-medium { background:rgba(251,191,36,0.15);  color:#fde68a; border:1px solid rgba(251,191,36,0.25); }
+    .score-low    { background:rgba(74,222,128,0.12);  color:#86efac; border:1px solid rgba(74,222,128,0.2); }
+    .chain-meta { color:var(--muted); font-size:.78rem; }
+    .chain-images { margin-top:4px; color:#7dd3fc; font-size:.75rem; font-family:monospace; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .spinner-row { display:flex; align-items:center; gap:8px; padding:20px 16px; color:var(--muted); font-size:.86rem; }
+    .spinner { width:16px; height:16px; border-radius:50%; border:2px solid rgba(103,232,249,0.2); border-top-color:var(--accent); animation:spin .7s linear infinite; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+
+    /* ── Detail panel ── */
+    .detail-panel { overflow-y:auto; padding:20px 24px; }
+    .empty-state { display:flex; align-items:center; justify-content:center; height:100%; color:var(--muted); font-size:.95rem; }
+    .section-card {
+      background:var(--card); border:1px solid var(--line-soft); border-radius:16px;
+      padding:18px 20px; margin-bottom:16px; backdrop-filter:blur(14px);
+      box-shadow:inset 0 1px 0 rgba(255,255,255,0.02), 0 16px 40px rgba(0,0,0,0.2);
+    }
+    .section-card h3 { font-size:.82rem; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin-bottom:12px; }
+    .summary-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
+    .stat-box { background:rgba(2,6,23,0.45); border:1px solid rgba(148,163,184,0.1); border-radius:10px; padding:10px 12px; }
+    .stat-label { font-size:.74rem; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; }
+    .stat-value { font-size:1.1rem; font-weight:700; color:#f8fafc; margin-top:2px; }
+    .eid-row { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+    .eid-chip { padding:4px 9px; border-radius:999px; font-size:.74rem; background:rgba(103,232,249,0.1); border:1px solid rgba(103,232,249,0.2); color:#b8f3ff; }
+
+    /* Event table */
+    .event-table { width:100%; border-collapse:collapse; font-size:.82rem; }
+    .event-table th { text-align:left; padding:7px 10px; color:var(--muted); font-size:.75rem; text-transform:uppercase; letter-spacing:.06em; border-bottom:1px solid var(--line-soft); }
+    .event-table td { padding:7px 10px; border-bottom:1px solid rgba(148,163,184,0.06); vertical-align:top; }
+    .event-table tr:hover td { background:rgba(103,232,249,0.04); }
+    .score-bar-wrap { display:flex; align-items:center; gap:8px; }
+    .score-bar { height:6px; border-radius:999px; min-width:2px; }
+    .score-num { font-size:.78rem; font-family:monospace; color:#cbd5e1; white-space:nowrap; }
+    td.image-cell { font-family:monospace; color:#7dd3fc; max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+    /* Attribution */
+    .attr-controls { display:flex; align-items:center; gap:10px; margin-bottom:14px; flex-wrap:wrap; }
+    .model-input {
+      flex:1; min-width:180px; padding:8px 12px; border-radius:8px;
+      border:1px solid var(--line); background:rgba(2,6,23,0.7); color:var(--text);
+      font-size:.88rem; outline:none; font-family:monospace;
+    }
+    .model-input:focus { border-color:rgba(103,232,249,0.4); }
+    .attr-btn {
+      padding:9px 18px; border-radius:10px; border:0; cursor:pointer; font-size:.9rem;
+      font-weight:700; color:#020617; background:linear-gradient(90deg,#7dd3fc,#c084fc);
+      box-shadow:0 8px 24px rgba(103,232,249,0.12); transition:filter 150ms, transform 150ms; white-space:nowrap;
+    }
+    .attr-btn:hover:not(:disabled) { filter:brightness(1.06); transform:translateY(-1px); }
+    .attr-btn:disabled { opacity:.65; cursor:wait; }
+    .attr-result { padding:14px 16px; border-radius:12px; border:1px solid rgba(103,232,249,0.18); background:rgba(2,6,23,0.5); }
+    .attr-result.error { border-color:rgba(248,113,113,0.3); }
+    .attr-field { margin-bottom:10px; }
+    .attr-field:last-child { margin-bottom:0; }
+    .attr-label { font-size:.74rem; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); margin-bottom:3px; }
+    .attr-val { font-size:.92rem; color:#f8fafc; line-height:1.55; }
+    .attr-val.mono { font-family:monospace; color:#67e8f9; font-size:1.05rem; }
+    .conf-badge { display:inline-block; padding:3px 10px; border-radius:999px; font-size:.78rem; font-weight:700; }
+    .conf-high   { background:rgba(248,113,113,0.18); color:#fca5a5; }
+    .conf-medium { background:rgba(251,191,36,0.15);  color:#fde68a; }
+    .conf-low    { background:rgba(74,222,128,0.12);  color:#86efac; }
+    .rag-list { display:flex; flex-wrap:wrap; gap:5px; margin-top:4px; }
+    .rag-chip { padding:3px 8px; border-radius:6px; font-size:.74rem; font-family:monospace; background:rgba(192,132,252,0.12); border:1px solid rgba(192,132,252,0.2); color:#e9d5ff; }
+    .latency { font-size:.76rem; color:var(--muted); margin-top:8px; }
+    .score-loading { color:var(--muted); font-size:.86rem; padding:12px 0; display:flex; align-items:center; gap:8px; }
+    /* Window chart */
+    .window-chart { display:flex; flex-direction:column; gap:3px; }
+    .window-row {
+      display:flex; align-items:center; gap:8px; padding:5px 8px; border-radius:8px;
+      cursor:pointer; border:1px solid transparent; transition:border-color 120ms, background 120ms;
+    }
+    .window-row:hover  { background:rgba(103,232,249,0.06); border-color:rgba(103,232,249,0.18); }
+    .window-row.active { background:rgba(103,232,249,0.1);  border-color:rgba(103,232,249,0.38); }
+    .window-row.flagged .w-bar { background: linear-gradient(90deg,#f87171,#fb923c); }
+    .w-label { font-size:.74rem; color:var(--muted); width:52px; flex-shrink:0; font-family:monospace; }
+    .w-bar-wrap { flex:1; height:10px; background:rgba(255,255,255,0.05); border-radius:999px; overflow:hidden; }
+    .w-bar { height:100%; border-radius:999px; background:linear-gradient(90deg,#4ade80,#22c55e); transition:width 200ms; }
+    .w-score { font-size:.74rem; font-family:monospace; color:#cbd5e1; width:50px; text-align:right; flex-shrink:0; }
+    .threshold-line { font-size:.72rem; color:var(--muted); margin:6px 0 2px; padding-left:60px; border-top:1px dashed rgba(248,113,113,0.3); padding-top:4px; }
+  </style>
+</head>
+<body>
+  <nav class="topbar">
+    <div class="brand"><span class="dot"></span> Phish'N'Chips &nbsp;·&nbsp; SOC Dashboard</div>
+    <div class="topbar-right">
+      <span class="user-chip">🔐 {{ nome }}</span>
+      <form method="post" action="{{ url_for('logout') }}" style="margin:0">
+        <button type="submit" class="logout-btn">Terminar sessão</button>
+      </form>
+    </div>
+  </nav>
+
+  <div class="statusbar">
+    <span class="status-chip"><span class="led green"></span>Single-event AE</span>
+    <span class="status-chip"><span class="led green"></span>Sequence TransformerAE</span>
+    <span class="status-chip"><span class="led green"></span>ATT&amp;CK KB (RAG)</span>
+    <span class="status-chip" id="ollamaChip">
+      <span class="led yellow" id="ollamaLed"></span>
+      <span id="ollamaLabel">Ollama — a verificar...</span>
+    </span>
+  </div>
+
+  <div class="shell">
+    <aside class="queue-panel">
+      <div class="panel-head">
+        <h2>Threat Queue</h2>
+        <select class="source-select" id="sourceSelect">
+          <option value="OTRF Atomic Red Team">OTRF Atomic</option>
+          <option value="Splunk Attack Range">Splunk</option>
+        </select>
+      </div>
+      <div class="chain-list" id="chainList">
+        <div class="spinner-row"><div class="spinner"></div>A carregar chains...</div>
+      </div>
+    </aside>
+
+    <section class="detail-panel">
+      <div class="empty-state" id="emptyState">Seleciona uma chain para inspecionar.</div>
+      <div id="detailContent" style="display:none"></div>
+    </section>
+  </div>
+
+  <script>
+    const DEFAULT_MODEL = {{ ollama_model | tojson }};
+    const SEQ_THRESHOLD = 0.627528;
+    const sourceSelect  = document.getElementById('sourceSelect');
+    const chainList     = document.getElementById('chainList');
+    const detailContent = document.getElementById('detailContent');
+    const emptyState    = document.getElementById('emptyState');
+    let allChains        = [];
+    let activeChainIdx   = null;
+    let activeWindowIdx  = null;  // index into the windows array for the active chain
+
+    function esc(s) {
+      return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+    function scoreClass(s) {
+      return s >= 0.85 ? 'score-high' : s >= 0.70 ? 'score-medium' : 'score-low';
+    }
+    function confClass(c) {
+      const l = (c || '').toLowerCase();
+      return l === 'high' ? 'conf-high' : l === 'medium' ? 'conf-medium' : 'conf-low';
+    }
+
+    async function checkOllama() {
+      try {
+        const d = await fetch('/api/ollama_status').then(r => r.json());
+        document.getElementById('ollamaLed').className    = d.available ? 'led green' : 'led yellow';
+        document.getElementById('ollamaLabel').textContent = d.available
+          ? `Ollama — ${d.model}` : `Ollama — não detectado (${d.model})`;
+      } catch (_) {}
+    }
+
+    async function loadChains(source) {
+      chainList.innerHTML = '<div class="spinner-row"><div class="spinner"></div>A carregar chains...</div>';
+      emptyState.style.display = '';
+      detailContent.style.display = 'none';
+      activeChainIdx  = null;
+      activeWindowIdx = null;
+      try {
+        allChains = await fetch('/api/threats?source=' + encodeURIComponent(source))
+          .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); });
+        chainList.innerHTML = allChains.length
+          ? allChains.map((c, i) => `
+              <div class="chain-item" onclick="selectChain(${i})">
+                <div class="chain-header">
+                  <span class="chain-gt">${esc(c.ground_truth || 'Unknown')}</span>
+                  <span class="score-badge ${scoreClass(c.peak_score)}">${c.peak_score.toFixed(3)}</span>
+                </div>
+                <div class="chain-meta">${c.event_count} events &nbsp;·&nbsp; window @${c.peak_start}</div>
+                ${c.sample_images.length ? `<div class="chain-images">${c.sample_images.map(esc).join(' · ')}</div>` : ''}
+              </div>`).join('')
+          : '<div class="spinner-row">Nenhuma chain detetada.</div>';
+      } catch (err) {
+        chainList.innerHTML = `<div class="spinner-row" style="color:#f87171">Erro: ${esc(err.message)}</div>`;
+      }
+    }
+
+    async function selectChain(idx) {
+      activeChainIdx  = idx;
+      activeWindowIdx = null;
+      document.querySelectorAll('.chain-item').forEach((el, i) => el.classList.toggle('active', i === idx));
+      const c = allChains[idx];
+      emptyState.style.display = 'none';
+      detailContent.style.display = '';
+
+      const eidHtml = Object.entries(c.eid_counts)
+        .map(([k, v]) => `<span class="eid-chip">${esc(k)} ×${v}</span>`).join('');
+
+      detailContent.innerHTML = `
+        <div class="section-card">
+          <h3>Chain #${idx} &nbsp;·&nbsp; ${esc(sourceSelect.value)}</h3>
+          <div class="summary-grid">
+            <div class="stat-box"><div class="stat-label">Peak Score</div><div class="stat-value">${c.peak_score.toFixed(4)}</div></div>
+            <div class="stat-box"><div class="stat-label">Events</div><div class="stat-value">${c.event_count}</div></div>
+            <div class="stat-box"><div class="stat-label">Ground Truth</div><div class="stat-value" style="font-size:.9rem;color:#67e8f9">${esc(c.ground_truth || '—')}</div></div>
+          </div>
+          <div class="eid-row">${eidHtml}</div>
+        </div>
+
+        <div class="section-card">
+          <h3>Window Scores &nbsp;<span style="font-size:.72rem;color:var(--muted)">Sequence TransformerAE — clica numa janela para ver os eventos</span></h3>
+          <div id="windowChart"><div class="score-loading"><div class="spinner"></div>A calcular janelas...</div></div>
+        </div>
+
+        <div class="section-card" id="eventScoresCard" style="display:none">
+          <h3>Per-event AE Scores &nbsp;<span style="font-size:.72rem;color:var(--muted)" id="eventScoresLabel"></span></h3>
+          <div id="eventScores"></div>
+        </div>
+
+        <div class="section-card">
+          <h3>ATT&amp;CK Attribution</h3>
+          <div class="attr-controls">
+            <input class="model-input" id="modelInput" value="${esc(DEFAULT_MODEL)}" placeholder="ex: qwen2.5:32b"/>
+            <button class="attr-btn" id="attrBtn" onclick="runAttribution(${idx})">&#9654; Run Attribution</button>
+          </div>
+          <div id="attrResult"></div>
+        </div>`;
+
+      loadWindowChart(idx);
+    }
+
+    async function loadWindowChart(chainIdx) {
+      const c   = allChains[chainIdx];
+      const el  = document.getElementById('windowChart');
+      if (!el) return;
+
+      try {
+        const windows = await fetch(`/api/threats/${chainIdx}/windows`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chain_indices: c._chain_indices })
+        }).then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); });
+
+        if (!windows.length) {
+          el.innerHTML = '<div class="score-loading">Sem janelas suficientes (chain demasiado curta).</div>';
+          return;
+        }
+
+        const maxScore = Math.max(...windows.map(w => w.score), SEQ_THRESHOLD, 0.001);
+
+        el.innerHTML = `<div class="window-chart" id="windowRows">
+          ${windows.map((w, wi) => {
+            const pct     = Math.round((w.score / maxScore) * 100);
+            const flagged = w.above_threshold ? 'flagged' : '';
+            const active  = wi === activeWindowIdx ? 'active' : '';
+            return `<div class="window-row ${flagged} ${active}" id="wrow-${wi}"
+                data-wi="${wi}" data-indices="${esc(JSON.stringify(w.window_indices))}"
+                onclick="selectWindow(${chainIdx}, ${wi})">
+              <span class="w-label">@${w.start}</span>
+              <div class="w-bar-wrap"><div class="w-bar" style="width:${Math.max(pct,1)}%"></div></div>
+              <span class="w-score">${w.score.toFixed(3)}</span>
+            </div>`;
+          }).join('')}
+        </div>
+        <div class="threshold-line">threshold: ${SEQ_THRESHOLD} — ${windows.filter(w=>w.above_threshold).length} janela(s) acima</div>`;
+
+        // Auto-select the peak window (data-indices already in DOM)
+        const peakIdx = windows.reduce((best, w, wi) => w.score > windows[best].score ? wi : best, 0);
+        selectWindow(chainIdx, peakIdx);
+
+      } catch (err) {
+        el.innerHTML = `<div class="score-loading" style="color:#f87171">Erro: ${esc(err.message)}</div>`;
+      }
+    }
+
+    async function selectWindow(chainIdx, windowIdx) {
+      if (activeChainIdx !== chainIdx) return;
+      activeWindowIdx = windowIdx;
+      const row          = document.getElementById(`wrow-${windowIdx}`);
+      const windowIndices = JSON.parse(row.dataset.indices);
+
+      // Highlight active row
+      document.querySelectorAll('.window-row').forEach((el, i) => el.classList.toggle('active', i === windowIdx));
+
+      const card  = document.getElementById('eventScoresCard');
+      const label = document.getElementById('eventScoresLabel');
+      const el    = document.getElementById('eventScores');
+      if (!card || !el) return;
+
+      card.style.display = '';
+      label.textContent  = `janela @${windowIndices[0] !== undefined ? 'índice ' + windowIdx : windowIdx} — ${windowIndices.length} eventos`;
+      el.innerHTML       = '<div class="score-loading"><div class="spinner"></div>A calcular scores...</div>';
+
+      try {
+        const events = await fetch(`/api/threats/${chainIdx}/score`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chain_indices: windowIndices })
+        }).then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); });
+
+        const maxScore = Math.max(...events.map(e => e.ae_score), 0.001);
+        el.innerHTML = `<table class="event-table">
+          <thead><tr><th>#</th><th>EID</th><th>Image</th><th>AE Score</th></tr></thead>
+          <tbody>${events.map(e => {
+            const pct   = Math.round((e.ae_score / maxScore) * 100);
+            const color = e.ae_score > maxScore * 0.7 ? '#f87171'
+                        : e.ae_score > maxScore * 0.4 ? '#fbbf24' : '#4ade80';
+            return `<tr>
+              <td>${e.idx + 1}</td>
+              <td><span class="eid-chip" style="font-size:.72rem">${esc(e.eid_name || e.event_id)}</span></td>
+              <td class="image-cell" title="${esc(e.image)}">${esc(e.image)}</td>
+              <td><div class="score-bar-wrap">
+                <div class="score-bar" style="width:${Math.max(pct,2)}px;background:${color}"></div>
+                <span class="score-num">${e.ae_score.toFixed(4)}</span>
+              </div></td>
+            </tr>`;
+          }).join('')}</tbody></table>`;
+      } catch (err) {
+        el.innerHTML = `<div class="score-loading" style="color:#f87171">Erro: ${esc(err.message)}</div>`;
+      }
+    }
+
+    async function runAttribution(idx) {
+      const c     = allChains[idx];
+      const btn   = document.getElementById('attrBtn');
+      const out   = document.getElementById('attrResult');
+      const model = (document.getElementById('modelInput').value || DEFAULT_MODEL).trim();
+
+      // Use the currently selected window; fall back to peak window
+      let indices = c._chain_indices.slice(c.peak_start, c.peak_start + 45);
+      const activeRow = document.querySelector('.window-row.active');
+      if (activeRow && activeRow.dataset.indices) {
+        try { indices = JSON.parse(activeRow.dataset.indices); } catch(_) {}
+      }
+
+      btn.disabled    = true;
+      btn.textContent = '⏳ A processar...';
+      out.innerHTML   = `<div class="score-loading"><div class="spinner"></div>A chamar Ollama (${esc(model)})...</div>`;
+
+      try {
+        const d = await fetch(`/api/threats/${idx}/attribute`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chain_indices: indices, ollama_model: model })
+        }).then(r => r.json().then(j => { if (!r.ok) throw new Error(j.error || r.statusText); return j; }));
+
+        const ragHtml = (d.rag_candidates || [])
+          .map(c => `<span class="rag-chip">${esc(c.id)}</span>`).join('');
+
+        out.innerHTML = `<div class="attr-result">
+          <div class="attr-field">
+            <div class="attr-label">Technique</div>
+            <div class="attr-val mono">${esc(d.technique_id)} &nbsp;·&nbsp; ${esc(d.technique_name)}</div>
+          </div>
+          <div class="attr-field">
+            <div class="attr-label">Confidence</div>
+            <div class="attr-val"><span class="conf-badge ${confClass(d.confidence)}">${esc(d.confidence || '—')}</span></div>
+          </div>
+          <div class="attr-field">
+            <div class="attr-label">Explanation</div>
+            <div class="attr-val">${esc(d.explanation || '—')}</div>
+          </div>
+          <div class="attr-field">
+            <div class="attr-label">Recommended Action</div>
+            <div class="attr-val">${esc(d.recommended_action || '—')}</div>
+          </div>
+          <div class="attr-field">
+            <div class="attr-label">RAG Candidates</div>
+            <div class="rag-list">${ragHtml}</div>
+          </div>
+          <div class="latency">Latência: ${d.latency_s}s</div>
+        </div>`;
+      } catch (err) {
+        out.innerHTML = `<div class="attr-result error"><div class="attr-field">
+          <div class="attr-label">Erro</div>
+          <div class="attr-val" style="color:#f87171">${esc(err.message)}</div>
+        </div></div>`;
+      } finally {
+        btn.disabled    = false;
+        btn.textContent = '&#9654; Run Attribution';
+      }
+    }
+
+    checkOllama();
+    sourceSelect.addEventListener('change', () => loadChains(sourceSelect.value));
+    loadChains(sourceSelect.value);
+  </script>
+</body>
+</html>

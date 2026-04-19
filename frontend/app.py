@@ -1,16 +1,17 @@
-"""Frontend web simples para autenticação por câmara.
+"""Frontend web — facial authentication + SOC threat dashboard.
 
-Abre uma página com uma caixa quadrada de vídeo ao vivo e um único botão
-"Autenticar". Ao clicar, o frame atual da câmara é enviado ao serviço de
-autenticação e o resultado aparece no ecrã.
+Auth flow  : camera → InsightFace → session → /dashboard
+Detection  : detection_service.py (TransformerAE + single-event AE + RAG + Ollama)
 """
 
 from __future__ import annotations
 
 import os
+import sys
 import traceback
+from pathlib import Path
 
-from flask import Flask, jsonify, redirect, render_template_string, request, session, url_for
+from flask import Flask, jsonify, redirect, render_template, render_template_string, request, session, url_for
 from werkzeug.exceptions import HTTPException
 
 try:
@@ -21,6 +22,16 @@ except ModuleNotFoundError:
     from servico_autenticacao import autenticar_detalhado, listar_alternativas
     from ui_registry import obter_alternativa_ui
     from alt1 import precarregar_recursos_alt1
+
+# ── Detection pipeline (cyber-anomaly-detection/) ─────────────────────────────
+_DETECTION_ROOT = Path(__file__).resolve().parent.parent / "cyber-anomaly-detection"
+sys.path.insert(0, str(_DETECTION_ROOT))
+import detection_service as _ds
+
+# Ollama config — override via env vars
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+OLLAMA_MODEL    = os.getenv("OLLAMA_MODEL",    "qwen2.5:32b")
+OLLAMA_TIMEOUT  = int(os.getenv("OLLAMA_TIMEOUT", "600"))
 
 
 app = Flask(__name__)
@@ -40,11 +51,25 @@ def _precarregar_alt1_no_arranque() -> None:
         total = precarregar_recursos_alt1()
         print(f"[startup] Alt1 pre-carregada com {total} pessoa(s) na base cacheada.")
     except Exception as exc:
-        # Falha de warmup não deve impedir o arranque da app.
         print(f"[startup] Aviso: falha no pre-carregamento da Alt1: {exc}")
 
 
+def _precarregar_detection_no_arranque() -> None:
+    """Pre-warm detection models (AE + TransformerAE + ChromaDB) at startup."""
+    try:
+        print("[startup] A carregar modelos de detecção (pode demorar ~30s)...")
+        _ds.load_all()
+        ollama_ok, models = _ds.check_ollama(OLLAMA_BASE_URL, OLLAMA_MODEL)
+        status = f"disponível ({OLLAMA_MODEL})" if ollama_ok else f"não detectado (modelo: {OLLAMA_MODEL})"
+        print(f"[startup] Modelos de detecção carregados. Ollama: {status}")
+        if not ollama_ok:
+            print(f"[startup] Para activar LLM: ollama serve && ollama pull {OLLAMA_MODEL}")
+    except Exception as exc:
+        print(f"[startup] Aviso: falha no pre-carregamento da detecção: {exc}")
+
+
 _precarregar_alt1_no_arranque()
+_precarregar_detection_no_arranque()
 
 
 HTML = """
@@ -1031,7 +1056,7 @@ def auth():
     if resultado.get("allowed"):
         nome = resultado.get("matched_name") or "Utilizador"
         session["auth_name"] = nome
-        resultado["redirect_to"] = url_for("welcome")
+        resultado["redirect_to"] = url_for("dashboard")
     return jsonify(resultado)
 
 
@@ -1043,10 +1068,86 @@ def welcome():
     return render_template_string(WELCOME_HTML, nome=nome)
 
 
+@app.get("/dashboard")
+def dashboard():
+    nome = session.get("auth_name")
+    if not nome:
+        return redirect(url_for("home"))
+    return render_template("dashboard.html", nome=nome, ollama_model=OLLAMA_MODEL)
+
+
 @app.post("/logout")
 def logout():
     session.pop("auth_name", None)
     return redirect(url_for("home"))
+
+
+# ── Detection API ─────────────────────────────────────────────────────────────
+
+@app.get("/api/ollama_status")
+def api_ollama_status():
+    available, models = _ds.check_ollama(OLLAMA_BASE_URL, OLLAMA_MODEL)
+    return jsonify({"available": available, "model": OLLAMA_MODEL, "installed": models})
+
+
+@app.get("/api/threats")
+def api_threats():
+    source = request.args.get("source", "OTRF Atomic Red Team")
+    limit  = int(request.args.get("limit", 20))
+    try:
+        chains = _ds.get_flagged_chains(source, limit=limit)
+        return jsonify(chains)
+    except Exception as exc:
+        traceback.print_exc()
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/threats/<int:chain_id>/windows")
+def api_windows(chain_id: int):
+    body          = request.get_json(force=True)
+    chain_indices = body.get("chain_indices", [])
+    if not chain_indices:
+        return jsonify({"error": "chain_indices required"}), 400
+    try:
+        windows = _ds.score_all_windows(chain_indices)
+        return jsonify(windows)
+    except Exception as exc:
+        traceback.print_exc()
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/threats/<int:chain_id>/score")
+def api_score(chain_id: int):
+    body          = request.get_json(force=True)
+    chain_indices = body.get("chain_indices", [])
+    if not chain_indices:
+        return jsonify({"error": "chain_indices required"}), 400
+    try:
+        events = _ds.score_chain_events(chain_indices)
+        return jsonify(events)
+    except Exception as exc:
+        traceback.print_exc()
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/threats/<int:chain_id>/attribute")
+def api_attribute(chain_id: int):
+    body          = request.get_json(force=True)
+    chain_indices = body.get("chain_indices", [])
+    ollama_model  = body.get("ollama_model", OLLAMA_MODEL).strip() or OLLAMA_MODEL
+    if not chain_indices:
+        return jsonify({"error": "chain_indices required"}), 400
+    try:
+        result = _ds.attribute_chain(
+            chain_indices,
+            ollama_model=ollama_model,
+            ollama_base_url=OLLAMA_BASE_URL,
+            ollama_timeout=OLLAMA_TIMEOUT,
+        )
+        return jsonify(result)
+    except Exception as exc:
+        traceback.print_exc()
+        return jsonify({"error": str(exc)}), 500
 
 
 if __name__ == "__main__":

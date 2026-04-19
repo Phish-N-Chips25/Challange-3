@@ -1,0 +1,21 @@
+{
+  "trial": 42,
+  "ap": 0.9110265445334912,
+  "roc_auc": 0.9544,
+  "tpr@1%fpr": 0.912,
+  "strategy": "word2vec",
+  "params": {
+    "strategy": "word2vec",
+    "arch": "transformer",
+    "window_size": 45,
+    "stride_ratio": 1.0,
+    "hidden_dim": 256,
+    "n_layers": 2,
+    "latent_dim": 128,
+    "dropout": 0.018647794316122058,
+    "lr": 0.0019603157690246086,
+    "weight_decay": 2.2066719973633085e-06,
+    "batch_size": 256,
+    "nhead": 8
+  }
+}

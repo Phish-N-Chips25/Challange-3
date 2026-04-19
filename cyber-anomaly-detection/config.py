@@ -151,4 +151,4 @@ CONTEXT_WINDOW_EVENTS = 32   # events per LLM prompt
 # ── ATT&CK KB / RAG ──────────────────────────────────────────────────────────
 CHROMA_PERSIST_DIR = str(ATTACK_KB_DIR / "chroma_db")
 EMBEDDING_MODEL    = "sentence-transformers/all-mpnet-base-v2"
-RAG_TOP_K          = 5   # default k; nb10 uses k=15 for higher recall
+RAG_TOP_K          = 15   # default k; nb10 uses k=15 for higher recall
