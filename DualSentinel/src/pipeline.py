@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
+import pandas as pd
 import typer
 from dotenv import load_dotenv
 from rich.console import Console
@@ -29,7 +30,8 @@ from rich.table import Table
 load_dotenv()
 
 from preprocessor import make_windows, parse_csv, parse_evtx, WindowFeatures
-from detectors import IForestDetector, GRUDetector, tag_techniques, ensemble_score
+from detectors import IForestDetector, GRUDetector, tag_techniques_with_kb, ensemble_score
+from chains import make_chains, chains_for_window
 from llm_judge import LLMJudge, JudgeResult
 from slm_analyst import SLMAnalyst
 console = Console()
@@ -148,6 +150,7 @@ def run_pipeline(
     threshold: Optional[float] = None,
     evaluate: bool = False,
     max_rows: Optional[int] = None,
+    use_kb: bool = True,
 ) -> dict:
     """
     Pipeline completo. Devolve dict com resultados e caminhos de output.
@@ -175,12 +178,13 @@ def run_pipeline(
         console.print("[red]Erro: nenhum evento carregado.")
         return {}
 
-    # ── 2. Windowing ──────────────────────────
-    console.print(f"[bold]Step 2:[/bold] Windowing ({WINDOW_SIZE}s)...")
+    # ── 2. Windowing + chains ─────────────────
+    console.print(f"[bold]Step 2:[/bold] Windowing ({WINDOW_SIZE}s) + chain extraction...")
     windows: list[WindowFeatures] = list(
         make_windows(df, window_size_seconds=WINDOW_SIZE, max_events=MAX_EVENTS)
     )
-    console.print(f"  → {len(windows)} janelas criadas")
+    chains = make_chains(df, min_length=2)
+    console.print(f"  → {len(windows)} janelas, {len(chains)} process chains")
 
     # Feature matrix (needed for GRU/IForest when not skipped)
     X = np.array([w.to_feature_vector() for w in windows])
@@ -224,13 +228,24 @@ def run_pipeline(
     # ── 5. Rule tagging + ensemble score ──────
     # Rule tagger always runs regardless of --skip-detectors.
     # When detectors are skipped, ensemble score is driven solely by rule hits.
-    console.print("[bold]Step 5:[/bold] ATT&CK rule tagging + ensemble score...")
+    kb_label = "+ KB retrieval" if use_kb else ""
+    console.print(f"[bold]Step 5:[/bold] ATT&CK rule tagging {kb_label} + ensemble score...")
     if skip_detectors:
-        console.print("  [dim](detector scores zeroed — escalation driven by ATT&CK rule hits only)[/dim]")
+        console.print("  [dim](detector scores zeroed — escalation driven by ATT&CK hits only)[/dim]")
     window_dicts = []
     for i, w in enumerate(windows):
         wd = w.to_dict()
-        wd["attck_hits"] = tag_techniques(wd)
+        wd["attck_hits"] = tag_techniques_with_kb(wd, use_kb=use_kb)
+        # Attach the longest overlapping chain as 'peak_chain' for the evidence pack.
+        try:
+            ws_dt = pd.to_datetime(wd.get("window_start"))
+            we_dt = pd.to_datetime(wd.get("window_end"))
+            overlap = chains_for_window(chains, ws_dt, we_dt)
+            if overlap:
+                peak = max(overlap, key=lambda c: (c.length, c.child_count))
+                wd["peak_chain"] = peak.to_dict()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("peak_chain attach failed for window %d: %s", i, exc)
         wd["if_score"] = float(if_scores[i])
         wd["gru_score"] = float(gru_scores[i])
         wd["detector_score"] = ensemble_score(
@@ -240,13 +255,31 @@ def run_pipeline(
         )
         window_dicts.append(wd)
 
-    # Guardar janelas enriquecidas
+    # Guardar janelas enriquecidas + chains
     windows_path = output_dir / "windows_scored.json"
     with open(windows_path, "w") as f:
         json.dump(window_dicts, f, indent=2, default=str)
+    chains_path = output_dir / "chains.json"
+    with open(chains_path, "w") as f:
+        json.dump([c.to_dict() for c in chains], f, indent=2, default=str)
 
     high_risk_count = sum(1 for w in window_dicts if w["detector_score"] >= effective_threshold)
     console.print(f"  → {high_risk_count}/{len(window_dicts)} janelas acima do threshold ({effective_threshold})")
+
+    # Persist rendered evidence packs for high-risk windows (debug aid).
+    from utils import build_evidence_pack
+    ep_path = output_dir / "evidence_packs.json"
+    ep_payload = []
+    for wd in window_dicts:
+        if wd["detector_score"] >= effective_threshold:
+            ep_payload.append({
+                "window_start":   wd.get("window_start"),
+                "window_end":     wd.get("window_end"),
+                "detector_score": wd["detector_score"],
+                "evidence_pack":  build_evidence_pack(wd),
+            })
+    with open(ep_path, "w", encoding="utf-8") as f:
+        json.dump(ep_payload, f, indent=2, default=str, ensure_ascii=False)
 
     # ── 6. SLM Analyst (Phi-3) + LLM Judge (Llama 3.1) ──
     judge_results: list[JudgeResult] = []
@@ -306,6 +339,8 @@ def run_pipeline(
     table.add_column("Output", style="cyan")
     table.add_column("Path")
     table.add_row("Windows scored", str(windows_path))
+    table.add_row("Chains", str(chains_path))
+    table.add_row("Evidence packs", str(ep_path))
     if judge_results:
         table.add_row("SLM analyses", str(output_dir / "slm_analyses.json"))
         table.add_row("Judge results", str(output_dir / "judge_results.json"))
@@ -341,6 +376,7 @@ def main(
     skip_detectors: bool = typer.Option(False, help="Salta IsolationForest e GRU; mantém o ATT&CK rule tagger"),
     threshold: Optional[float] = typer.Option(None, help="Sobrepõe ANOMALY_THRESHOLD do .env (ex: 0.2 com --skip-detectors)"),
     evaluate: bool = typer.Option(False, help="Calcula métricas (requer labels)"),
+    use_kb: bool = typer.Option(True, "--use-kb/--no-use-kb", help="Augmenta o tagger com retrieval do ATT&CK KB (Chroma)"),
     verbose: bool = typer.Option(False, help="Log detalhado"),
 ):
     level = logging.DEBUG if verbose else logging.INFO
@@ -355,6 +391,7 @@ def main(
         skip_detectors=skip_detectors,
         threshold=threshold,
         evaluate=evaluate,
+        use_kb=use_kb,
     )
 
 

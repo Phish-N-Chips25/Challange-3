@@ -24,6 +24,7 @@ from embeddings import (
     SMART_FEATURE_DIM,
     SMART_FEATURE_NAMES,
 )
+from schema import CANONICAL_COLUMNS, enforce_schema, normalise_basename
 
 logger = logging.getLogger(__name__)
 
@@ -162,41 +163,61 @@ def parse_csv(path: Path, dataset: str = "lmd", nrows: int | None = None) -> pd.
             "utctime": "timestamp",
             "systemtime": "_systemtime_fallback",
             "eventid": "event_id",
-            "image": "process_name",
+            "image": "image",                          # keep full path; basename → process_name below
             "processid": "process_id",
-            "parentimage": "parent_process",
-            "targetimage": "target_process",
+            "processguid": "process_guid",
+            "parentimage": "parent_image",
+            "parentprocessid": "parent_id",
+            "parentprocessguid": "parent_guid",
+            "targetimage": "target_image",
             "destinationip": "network_dest_ip",
             "destinationport": "network_dest_port",
             "targetfilename": "file_path",
             "targetobject": "registry_key",
             "user": "user",
             "commandline": "command_line",
+            "hashes": "hashes",
+            "computer": "host",
+            "computername": "host",
+            "label": "label",
+            "technique": "technique",
         },
         "splunk": {
             "systemtime": "timestamp",
             "eventid": "event_id",
-            "image": "process_name",
+            "image": "image",
             "processid": "process_id",
-            "parentimage": "parent_process",
+            "processguid": "process_guid",
+            "parentimage": "parent_image",
+            "parentprocessid": "parent_id",
+            "parentprocessguid": "parent_guid",
             "destinationip": "network_dest_ip",
             "destinationport": "network_dest_port",
             "targetfilename": "file_path",
             "targetobject": "registry_key",
             "user": "user",
             "commandline": "command_line",
+            "hashes": "hashes",
+            "computer": "host",
         },
         "silrad": {
             "timestamp": "timestamp",
             "event_id": "event_id",
-            "process_name": "process_name",
+            "process_name": "image",                   # SILRAD already has basenames; treat as image
             "pid": "process_id",
-            "parent_process_name": "parent_process",
+            "process_guid": "process_guid",
+            "parent_process_name": "parent_image",
+            "parent_pid": "parent_id",
+            "parent_process_guid": "parent_guid",
             "dest_ip": "network_dest_ip",
             "dest_port": "network_dest_port",
             "target_filename": "file_path",
             "user_name": "user",
             "cmdline": "command_line",
+            "hashes": "hashes",
+            "host": "host",
+            "label": "label",
+            "technique": "technique",
         },
     }
 
@@ -223,18 +244,18 @@ def parse_csv(path: Path, dataset: str = "lmd", nrows: int | None = None) -> pd.
     df = df.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
     df["event_id"] = pd.to_numeric(df["event_id"], errors="coerce").fillna(0).astype(int)
 
-    # Normalizar nome do processo (basename) — vectorised str ops, no per-row Path()
-    if "process_name" in df.columns:
-        df["process_name"] = (
-            df["process_name"].astype(str)
-            .str.replace("\\\\", "/", regex=False)
-            .str.split("/").str[-1]
-            .str.lower()
-        )
+    # Derive basenames from full image paths
+    if "image" in df.columns:
+        df["process_name"] = normalise_basename(df["image"])
+    if "parent_image" in df.columns:
+        df["parent_process"] = normalise_basename(df["parent_image"])
+    if "target_image" in df.columns:
+        df["target_process"] = normalise_basename(df["target_image"])
 
     # Filtrar apenas EventIDs relevantes
     df = df[df["event_id"].isin(RELEVANT_EVENT_IDS)]
 
+    df = enforce_schema(df, dataset_source=dataset)
     logger.info(f"Loaded {len(df)} events from {path.name} (dataset={dataset})")
     return df
 
@@ -273,9 +294,15 @@ def parse_evtx(path: Path) -> pd.DataFrame:
                 rows.append({
                     "timestamp": ts,
                     "event_id": event_id,
+                    "image": ed.get("image", ""),
                     "process_name": Path(ed.get("image", "")).name.lower(),
                     "process_id": int(ed.get("processid", 0) or 0),
+                    "process_guid": ed.get("processguid", ""),
+                    "parent_image": ed.get("parentimage", ""),
                     "parent_process": Path(ed.get("parentimage", "")).name.lower(),
+                    "parent_id": int(ed.get("parentprocessid", 0) or 0),
+                    "parent_guid": ed.get("parentprocessguid", ""),
+                    "target_image": ed.get("targetimage", ""),
                     "target_process": Path(ed.get("targetimage", "")).name.lower(),
                     "network_dest_ip": ed.get("destinationip", ""),
                     "network_dest_port": int(ed.get("destinationport", 0) or 0),
@@ -283,6 +310,8 @@ def parse_evtx(path: Path) -> pd.DataFrame:
                     "registry_key": ed.get("targetobject", ""),
                     "user": ed.get("user", ""),
                     "command_line": ed.get("commandline", ""),
+                    "hashes": ed.get("hashes", ""),
+                    "host": system.get("Computer", "") if isinstance(system, dict) else "",
                 })
             except Exception as e:
                 logger.debug(f"Skipping record: {e}")
@@ -292,6 +321,7 @@ def parse_evtx(path: Path) -> pd.DataFrame:
     if df.empty:
         return df
     df = df.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
+    df = enforce_schema(df, dataset_source="evtx")
     logger.info(f"Parsed {len(df)} events from EVTX {path.name}")
     return df
 
@@ -342,9 +372,15 @@ def parse_splunk_xml(path: Path) -> pd.DataFrame:
                 rows.append({
                     "timestamp":        ts,
                     "event_id":         event_id,
+                    "image":            ed.get("image", ""),
                     "process_name":     _basename(ed.get("image", "")),
                     "process_id":       int(ed.get("processid", 0) or 0),
+                    "process_guid":     ed.get("processguid", ""),
+                    "parent_image":     ed.get("parentimage", ""),
                     "parent_process":   _basename(ed.get("parentimage", "")),
+                    "parent_id":        int(ed.get("parentprocessid", 0) or 0),
+                    "parent_guid":      ed.get("parentprocessguid", ""),
+                    "target_image":     ed.get("targetimage", ""),
                     "target_process":   _basename(ed.get("targetimage", "")),
                     "network_dest_ip":  ed.get("destinationip", ""),
                     "network_dest_port": int(ed.get("destinationport", 0) or 0),
@@ -352,6 +388,8 @@ def parse_splunk_xml(path: Path) -> pd.DataFrame:
                     "registry_key":     ed.get("targetobject", ""),
                     "user":             ed.get("user", "") or ed.get("sourceuser", ""),
                     "command_line":     ed.get("commandline", ""),
+                    "hashes":           ed.get("hashes", ""),
+                    "host":             ed.get("computer", ""),
                 })
             except ET.ParseError:
                 logger.debug(f"XML parse error at line {lineno}")
@@ -362,6 +400,7 @@ def parse_splunk_xml(path: Path) -> pd.DataFrame:
         logger.warning(f"No relevant Sysmon events parsed from {path.name}")
         return df
     df = df.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
+    df = enforce_schema(df, dataset_source="splunk")
     logger.info(f"Parsed {len(df)} events from Splunk XML {path.name}")
     return df
 

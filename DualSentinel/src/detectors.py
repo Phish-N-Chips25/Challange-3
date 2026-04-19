@@ -118,6 +118,106 @@ def tag_techniques(window_dict: dict) -> list[dict]:
     return hits
 
 
+def tag_techniques_with_kb(
+    window_dict: dict,
+    *,
+    kb_top_k: int = 5,
+    use_kb: bool = True,
+) -> list[dict]:
+    """Combine rule tagger with retrieval-backed ATT&CK KB hits.
+
+    Rule hits keep their hard-coded confidence; KB hits get a confidence
+    derived from their RRF score (clamped to [0.3, 0.85]) and a `source='kb'`
+    marker. Rule hits take precedence when the same technique_id appears in
+    both sources.
+
+    Falls back to rule-only when the KB is unavailable.
+    """
+    rule_hits = tag_techniques(window_dict)
+    if not use_kb:
+        return rule_hits
+
+    try:
+        from attack_kb import retrieve_for_window  # lazy import (heavy deps)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("attack_kb import failed: %s; rule-only.", exc)
+        return rule_hits
+
+    kb_hits_raw = retrieve_for_window(window_dict, k=kb_top_k)
+    if not kb_hits_raw:
+        return rule_hits
+
+    seen_ids = {h["technique"] for h in rule_hits}
+    out = list(rule_hits)
+    # Normalise KB scores to a confidence band so they don't dominate rules.
+    if kb_hits_raw:
+        max_score = max(h["score"] for h in kb_hits_raw) or 1.0
+        for h in kb_hits_raw:
+            tid = h.get("technique_id", "")
+            if not tid or tid in seen_ids:
+                continue
+            confidence = 0.3 + 0.55 * (h["score"] / max_score)
+            out.append({
+                "technique":  tid,
+                "name":       h.get("technique_name", ""),
+                "confidence": round(float(confidence), 3),
+                "source":     "kb",
+                "evidence":   h.get("document", "")[:240],
+            })
+            seen_ids.add(tid)
+    return out
+
+
+def tag_techniques_with_kb(
+    window_dict: dict,
+    *,
+    kb_top_k: int = 5,
+    use_kb: bool = True,
+) -> list[dict]:
+    """Combine rule tagger with retrieval-backed ATT&CK KB hits.
+
+    Rule hits keep their hard-coded confidence; KB hits get a confidence
+    derived from their RRF score (clamped to [0.3, 0.85]) and a `source='kb'`
+    marker. Rule hits take precedence when the same technique_id appears in
+    both sources.
+
+    Falls back to rule-only when the KB is unavailable.
+    """
+    rule_hits = tag_techniques(window_dict)
+    if not use_kb:
+        return rule_hits
+
+    try:
+        from attack_kb import retrieve_for_window  # lazy import (heavy deps)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("attack_kb import failed: %s; rule-only.", exc)
+        return rule_hits
+
+    kb_hits_raw = retrieve_for_window(window_dict, k=kb_top_k)
+    if not kb_hits_raw:
+        return rule_hits
+
+    seen_ids = {h["technique"] for h in rule_hits}
+    out = list(rule_hits)
+    # Normalise KB scores to a confidence band so they don't dominate rules.
+    if kb_hits_raw:
+        max_score = max(h["score"] for h in kb_hits_raw) or 1.0
+        for h in kb_hits_raw:
+            tid = h.get("technique_id", "")
+            if not tid or tid in seen_ids:
+                continue
+            confidence = 0.3 + 0.55 * (h["score"] / max_score)
+            out.append({
+                "technique":  tid,
+                "name":       h.get("technique_name", ""),
+                "confidence": round(float(confidence), 3),
+                "source":     "kb",
+                "evidence":   h.get("document", "")[:240],
+            })
+            seen_ids.add(tid)
+    return out
+
+
 # ─────────────────────────────────────────────
 # IsolationForest Detector
 # ─────────────────────────────────────────────

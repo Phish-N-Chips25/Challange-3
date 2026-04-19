@@ -84,11 +84,36 @@ def build_evidence_pack(window: dict) -> str:
 
     attck_hits = window.get("attck_hits", [])
     if attck_hits:
-        lines += ["", "--- Rule tagger hits (pre-computed) ---"]
-        for h in attck_hits:
-            lines.append(
-                f"  {h['technique']} {h['name']} (confidence={h['confidence']:.2f})"
-            )
+        rule_hits = [h for h in attck_hits if h.get("source", "rule") == "rule"]
+        kb_hits = [h for h in attck_hits if h.get("source") == "kb"]
+        if rule_hits:
+            lines += ["", "--- Rule tagger hits (pre-computed) ---"]
+            for h in rule_hits:
+                lines.append(
+                    f"  {h['technique']} {h['name']} (confidence={h['confidence']:.2f})"
+                )
+        if kb_hits:
+            lines += ["", "--- ATT&CK KB candidates (retrieved, not confirmed) ---"]
+            for h in kb_hits:
+                ev = str(h.get("evidence", ""))[:160].replace("```", "'''")
+                lines.append(
+                    f"  {h['technique']} {h['name']} (similarity={h['confidence']:.2f}) :: {ev}"
+                )
+
+    peak = window.get("peak_chain")
+    if peak and peak.get("event_summaries"):
+        lines += [
+            "",
+            "--- Peak process chain (longest overlap) ---",
+            f"  process: {peak.get('process_name','?')} (guid={peak.get('process_guid','')[:12]}...)",
+            f"  parent:  {peak.get('parent_process','?')}",
+            f"  user:    {peak.get('user','?')}  host: {peak.get('host','?')}",
+            f"  length:  {peak.get('length',0)} events  duration: {peak.get('duration_seconds',0):.1f}s  children: {peak.get('child_count',0)}",
+            "  ordered events:",
+        ]
+        for i, s in enumerate(peak.get("event_summaries", [])[:25], 1):
+            safe = str(s)[:140].replace("```", "'''")
+            lines.append(f"    [{i:02d}] {safe}")
 
     summaries = window.get("event_summaries", [])
     if summaries:
