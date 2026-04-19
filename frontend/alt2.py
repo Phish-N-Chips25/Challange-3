@@ -196,16 +196,16 @@ def classificar_rosto(imagem: np.ndarray, threshold: float = THRESHOLD_PADRAO):
     O modelo foi treinado com as 5 pessoas, então faz classificação direta,
     não comparação com base de dados como Alt1.
     """
+    if imagem is None:
+        return None, -1.0, False
+    
+    model, mtcnn, device = obter_modelo()
+    
+    # Converte para RGB (PIL espera RGB)
+    pil_img = Image.fromarray(cv2.cvtColor(imagem, cv2.COLOR_BGR2RGB))
+    
+    # Detecta rostos com MTCNN
     try:
-        if imagem is None:
-            return None, -1.0, False
-
-        model, mtcnn, device = obter_modelo()
-
-        # Converte para RGB (PIL espera RGB)
-        pil_img = Image.fromarray(cv2.cvtColor(imagem, cv2.COLOR_BGR2RGB))
-
-        # Detecta rostos com MTCNN
         boxes, probs = mtcnn.detect(pil_img, landmarks=False)
         if boxes is None or len(boxes) == 0:
             return None, -1.0, False
@@ -240,8 +240,8 @@ def classificar_rosto(imagem: np.ndarray, threshold: float = THRESHOLD_PADRAO):
         
         return classe_nome, score, permitido
         
-    except Exception as exc:
-        raise RuntimeError(f"Falha na Alt2 ao processar a imagem: {exc}") from exc
+    except Exception:
+        return None, -1.0, False
 
 
 def validar_pessoa(
@@ -272,17 +272,7 @@ def validar_pessoa_detalhes(
             "reason": "imagem_invalida",
         }
 
-    try:
-        nome, score, permitido = classificar_rosto(frame, threshold)
-    except Exception as exc:
-        return {
-            "allowed": False,
-            "score": None,
-            "threshold": float(threshold),
-            "matched_name": None,
-            "reason": "erro_interno",
-            "error": str(exc),
-        }
+    nome, score, permitido = classificar_rosto(frame, threshold)
     
     if nome is None:
         return {

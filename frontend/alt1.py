@@ -60,7 +60,7 @@ import json
 
 import cv2
 import numpy as np
-from insightface.app.face_analysis import FaceAnalysis
+from insightface.app import FaceAnalysis
 from sklearn.metrics.pairwise import cosine_similarity
 
 
