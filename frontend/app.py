@@ -28,14 +28,26 @@ _DETECTION_ROOT = Path(__file__).resolve().parent.parent / "cyber-anomaly-detect
 sys.path.insert(0, str(_DETECTION_ROOT))
 import detection_service as _ds
 
+# ── DualSentinel pipeline ──────────────────────────────────────────────────────
+import threading
+import uuid
+
+_DS_ROOT    = Path(__file__).resolve().parent.parent / "DualSentinel" / "src"
+_DS_SAMPLES = Path(__file__).resolve().parent.parent / "DualSentinel" / "data" / "samples"
+sys.path.insert(0, str(_DS_ROOT))
+
+_ds2_runs: dict[str, dict] = {}
+_ds2_lock = threading.Lock()
+
 # Ollama config — override via env vars
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL    = os.getenv("OLLAMA_MODEL",    "qwen2.5:32b")
+OLLAMA_MODEL    = os.getenv("OLLAMA_MODEL",    "phi4:14b")
 OLLAMA_TIMEOUT  = int(os.getenv("OLLAMA_TIMEOUT", "600"))
 
 
 app = Flask(__name__)
 app.secret_key = "neongate-dev-secret-key-change-me"
+app.config["TEMPLATES_AUTO_RELOAD"] = True
 
 
 def _env_bool(nome: str, default: bool = False) -> bool:
@@ -1073,7 +1085,11 @@ def dashboard():
     nome = session.get("auth_name")
     if not nome:
         return redirect(url_for("home"))
-    return render_template("dashboard.html", nome=nome, ollama_model=OLLAMA_MODEL)
+    resp = app.make_response(render_template("dashboard.html", nome=nome, ollama_model=OLLAMA_MODEL))
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
 
 
 @app.post("/logout")
@@ -1148,6 +1164,136 @@ def api_attribute(chain_id: int):
     except Exception as exc:
         traceback.print_exc()
         return jsonify({"error": str(exc)}), 500
+
+
+# ── DualSentinel API ──────────────────────────────────────────────────────────
+
+def _ds2_run_bg(run_id: str, file_path: Path, dataset: str, threshold: float, skip_judge: bool, max_rows: int | None = None) -> None:
+    """Background thread: run DualSentinel pipeline and store result in _ds2_runs."""
+    with _ds2_lock:
+        _ds2_runs[run_id]["status"]  = "running"
+        _ds2_runs[run_id]["message"] = "A iniciar pipeline..."
+    try:
+        from pipeline import run_pipeline  # imported here to avoid module-level side effects
+        output_dir = Path(__file__).resolve().parent.parent / "DualSentinel" / "results"
+        with _ds2_lock:
+            _ds2_runs[run_id]["message"] = "A processar eventos e a calcular anomalias..."
+        result = run_pipeline(
+            input_path=file_path,
+            dataset=dataset,
+            output_dir=output_dir / run_id,
+            threshold=threshold,
+            skip_judge=skip_judge,
+            max_rows=max_rows,
+        )
+        with _ds2_lock:
+            _ds2_runs[run_id]["status"]  = "done"
+            _ds2_runs[run_id]["message"] = "Pipeline concluído."
+            _ds2_runs[run_id]["result"]  = result
+    except Exception as exc:
+        traceback.print_exc()
+        with _ds2_lock:
+            _ds2_runs[run_id]["status"]  = "error"
+            _ds2_runs[run_id]["message"] = str(exc)
+            _ds2_runs[run_id]["error"]   = str(exc)
+
+
+@app.get("/api/dualsentinel/samples")
+def api_ds2_samples():
+    """List available sample files under DualSentinel/data/samples/."""
+    if not _DS_SAMPLES.exists():
+        return jsonify([])
+    exts = {".csv", ".log", ".xml", ".evtx"}
+    files = []
+    for p in sorted(_DS_SAMPLES.rglob("*")):
+        if p.suffix.lower() in exts and p.is_file():
+            files.append({
+                "name":     p.name,
+                "rel_path": str(p.relative_to(_DS_SAMPLES)).replace("\\", "/"),
+                "size_kb":  round(p.stat().st_size / 1024, 1),
+            })
+    return jsonify(files)
+
+
+@app.post("/api/dualsentinel/run")
+def api_ds2_run():
+    """Launch a DualSentinel pipeline run in a background thread."""
+    body      = request.get_json(force=True)
+    rel_file  = (body.get("file") or "").strip()
+    dataset   = (body.get("dataset") or "lmd").strip().lower()
+    threshold = float(body.get("threshold") or 0.6)
+    skip_judge = bool(body.get("skip_judge", False))
+    max_rows_raw = body.get("max_rows")
+    max_rows: int | None = int(max_rows_raw) if max_rows_raw else None
+
+    if not rel_file:
+        return jsonify({"error": "file is required"}), 400
+
+    # Path traversal guard — resolve and check it stays under _DS_SAMPLES
+    try:
+        file_path = (_DS_SAMPLES / rel_file).resolve()
+        _DS_SAMPLES.resolve()  # ensure base exists
+        file_path.relative_to(_DS_SAMPLES.resolve())  # raises if outside
+    except (ValueError, OSError):
+        return jsonify({"error": "Invalid file path"}), 400
+
+    if not file_path.exists():
+        return jsonify({"error": f"File not found: {rel_file}"}), 404
+
+    run_id = str(uuid.uuid4())
+    with _ds2_lock:
+        _ds2_runs[run_id] = {"status": "queued", "message": "Na fila de espera...", "result": None, "error": None}
+
+    t = threading.Thread(
+        target=_ds2_run_bg,
+        args=(run_id, file_path, dataset, threshold, skip_judge, max_rows),
+        daemon=True,
+        name=f"ds2-{run_id[:8]}",
+    )
+    t.start()
+    return jsonify({"run_id": run_id})
+
+
+@app.get("/api/dualsentinel/status/<run_id>")
+def api_ds2_status(run_id: str):
+    with _ds2_lock:
+        run = _ds2_runs.get(run_id)
+    if run is None:
+        return jsonify({"error": "Run not found"}), 404
+    return jsonify({"status": run["status"], "message": run["message"]})
+
+
+@app.get("/api/dualsentinel/results/<run_id>")
+def api_ds2_results(run_id: str):
+    with _ds2_lock:
+        run = _ds2_runs.get(run_id)
+    if run is None:
+        return jsonify({"error": "Run not found"}), 404
+    if run["status"] == "running" or run["status"] == "queued":
+        return jsonify({"error": "Still running", "status": run["status"]}), 409
+    if run["status"] == "error":
+        return jsonify({"error": run["error"]}), 500
+    result = run["result"] or {}
+
+    # Coerce numpy scalars / arrays to native Python types for JSON encoding.
+    def _coerce(o):
+        import numpy as _np
+        if isinstance(o, dict):
+            return {k: _coerce(v) for k, v in o.items()}
+        if isinstance(o, (list, tuple)):
+            return [_coerce(v) for v in o]
+        if isinstance(o, _np.generic):
+            return o.item()
+        if isinstance(o, _np.ndarray):
+            return _coerce(o.tolist())
+        return o
+
+    return jsonify(_coerce({
+        "windows":       result.get("windows", []),
+        "judge_results": result.get("judge_results", []),
+        "output_dir":    result.get("output_dir", ""),
+        "report":        result.get("report", ""),
+    }))
 
 
 if __name__ == "__main__":

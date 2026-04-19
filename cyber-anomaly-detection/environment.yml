@@ -9,10 +9,12 @@ dependencies:
   - pip
   - jupyterlab
   - ipykernel
-  # PyTorch with CUDA 12.6 — install from pytorch channel
-  - pytorch
-  - pytorch-cuda=12.6
   - pip:
+      # ── PyTorch with CUDA 12.6 (via pip index) ────────────────────────────
+      - --index-url https://download.pytorch.org/whl/cu126
+      - torch>=2.0
+      - torchvision>=0.15
+      - --extra-index-url https://pypi.org/simple
       # ── Core data ──────────────────────────────────────────────────────────
       - numpy>=1.26
       - pandas>=2.2

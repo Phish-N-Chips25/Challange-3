@@ -176,7 +176,14 @@ def _load_models() -> None:
     if _ae_model is not None:
         return
 
-    ae_cfg = json.loads((AE_DIR / "ae_best.json").read_text())["word2vec"]
+    ae_best_path   = AE_DIR / "ae_best.json"
+    ae_weights_path = AE_DIR / "word2vec" / "best.pt"
+    seq_params_path = SEQ_MODEL_DIR / "best_params.json"
+
+    if not ae_best_path.exists() or not ae_weights_path.exists():
+        return  # model weights not available; demo mode will be used
+
+    ae_cfg = json.loads(ae_best_path.read_text())["word2vec"]
     layer_sizes = sorted(
         [max(16, int(353 * ae_cfg[f"ratio_{i}"])) for i in range(ae_cfg["n_layers"])],
         reverse=True,
@@ -185,19 +192,26 @@ def _load_models() -> None:
     ae = Autoencoder(353, layer_sizes, latent_dim,
                      ae_cfg["activation"], ae_cfg["use_batchnorm"],
                      ae_cfg["dropout"]).to(DEVICE)
-    ae_ckpt = torch.load(AE_DIR / "word2vec" / "best.pt", map_location=DEVICE, weights_only=True)
+    ae_ckpt = torch.load(ae_weights_path, map_location=DEVICE, weights_only=True)
     ae.load_state_dict(ae_ckpt["model_state"])
     ae.eval()
     _ae_model = ae
 
-    seq_raw    = json.loads((SEQ_MODEL_DIR / "best_params.json").read_text())
+    if not seq_params_path.exists():
+        return  # seq model weights not available; demo mode will be used
+
+    seq_raw    = json.loads(seq_params_path.read_text())
     seq_p      = seq_raw.get("params", seq_raw)
+    seq_weights_path = SEQ_MODEL_DIR / f"seq_ae_{seq_p['strategy']}.pt"
+    if not seq_weights_path.exists():
+        return
+
     seq = TransformerAE(
         352, seq_p["hidden_dim"], seq_p["latent_dim"],
         seq_p["n_layers"], seq_p.get("nhead", 4), seq_p["dropout"],
     ).to(DEVICE)
     seq_state = torch.load(
-        SEQ_MODEL_DIR / f"seq_ae_{seq_p['strategy']}.pt",
+        seq_weights_path,
         map_location=DEVICE, weights_only=True,
     )
     seq.load_state_dict(seq_state)
@@ -211,10 +225,19 @@ def _load_data() -> None:
     if _events_m is not None:
         return
     _events_m = pd.read_parquet(CKPT_DIR / "events_m.parquet")
-    _X_m_ae   = np.load(CKPT_DIR / "word2vec" / "X_m_w2v.npy",        mmap_mode="r")
-    _X_m_seq  = np.load(CKPT_DIR / "word2vec" / "X_m_w2v_norule.npy", mmap_mode="r")
-    with open(SEQ_CHAINS_DIR / "seq_chains_m.pkl", "rb") as f:
-        _chains_m = pickle.load(f)
+    try:
+        _X_m_ae = np.load(CKPT_DIR / "word2vec" / "X_m_w2v.npy", mmap_mode="r")
+    except FileNotFoundError:
+        _X_m_ae = None
+    try:
+        _X_m_seq = np.load(CKPT_DIR / "word2vec" / "X_m_w2v_norule.npy", mmap_mode="r")
+    except FileNotFoundError:
+        _X_m_seq = None
+    try:
+        with open(SEQ_CHAINS_DIR / "seq_chains_m.pkl", "rb") as f:
+            _chains_m = pickle.load(f)
+    except FileNotFoundError:
+        _chains_m = None
 
 
 def _load_kb() -> None:
@@ -428,6 +451,82 @@ def check_ollama(base_url: str, model: str) -> tuple[bool, list[str]]:
         return False, []
 
 
+def _get_demo_flagged_chains(source_name: str, limit: int = 20) -> list[dict]:
+    """
+    Fallback used when ML artifacts (.npy / .pkl) are unavailable.
+    Builds realistic chains directly from events_m.parquet using ATT&CK labels.
+    """
+    lo, hi = SOURCE_BOUNDS[source_name]
+    src_df = _events_m.iloc[lo:hi].copy()
+    src_df["_row"] = range(lo, hi)
+
+    skip = _SKIP | {"nan"}
+    labelled = src_df[
+        src_df["attck_technique"].apply(lambda t: str(t).strip() not in skip)
+    ]
+
+    # Group consecutive events by technique, build chains of ~50 events
+    results = []
+    chain_id = 0
+    import random as _random
+    rng = _random.Random(42)
+
+    top_techs = (
+        labelled["attck_technique"]
+        .value_counts()
+        .head(limit * 2)
+        .index.tolist()
+    )
+
+    for tech in top_techs:
+        if chain_id >= limit:
+            break
+        tech_rows = labelled[labelled["attck_technique"] == tech]["_row"].tolist()
+        if len(tech_rows) < 10:
+            continue
+
+        # Pick a contiguous slice
+        chain_len = min(len(tech_rows), 60)
+        start_idx = rng.randint(0, max(0, len(tech_rows) - chain_len))
+        chain = tech_rows[start_idx: start_idx + chain_len]
+
+        images = []
+        seen: set = set()
+        for r in chain:
+            val = str(_events_m.iloc[r].get("image", "")).strip()
+            key = val.split("\\")[-1].lower()
+            if val and val not in _SKIP and key not in seen:
+                seen.add(key)
+                images.append(val.split("\\")[-1])
+            if len(images) >= 3:
+                break
+
+        eid_counts = Counter(
+            int(_events_m.iloc[r].get("event_id", 0))
+            for r in chain
+            if str(_events_m.iloc[r].get("event_id", "")).isdigit()
+        )
+
+        # Synthetic score slightly above threshold to signal anomaly
+        peak_score = round(SEQ_THRESHOLD + rng.uniform(0.05, 0.55), 4)
+
+        results.append({
+            "chain_id":       chain_id,
+            "peak_score":     peak_score,
+            "peak_start":     0,
+            "event_count":    len(chain),
+            "ground_truth":   tech,
+            "sample_images":  images,
+            "eid_counts":     {EID_NAMES.get(k, f"EID {k}"): int(v)
+                               for k, v in eid_counts.most_common(5)},
+            "_chain_indices": chain,
+            "_demo_mode":     True,
+        })
+        chain_id += 1
+
+    return sorted(results, key=lambda e: -e["peak_score"])
+
+
 def get_flagged_chains(source_name: str, limit: int = 20) -> list[dict]:
     """
     Return up to `limit` flagged chains for a given source, sorted by peak score desc.
@@ -436,11 +535,18 @@ def get_flagged_chains(source_name: str, limit: int = 20) -> list[dict]:
       chain_id, peak_score, peak_start, event_count,
       ground_truth, sample_images, eid_counts
     """
-    _load_models()
     _load_data()
 
     if source_name not in SOURCE_BOUNDS:
         raise ValueError(f"Unknown source: {source_name}. Choose from {SOURCE_NAMES}")
+
+    # If ML artifacts are missing, fall back to demo mode (label-based chains)
+    if _chains_m is None or _X_m_seq is None:
+        if source_name not in _flagged_cache:
+            _flagged_cache[source_name] = _get_demo_flagged_chains(source_name, limit)
+        return _flagged_cache[source_name]
+
+    _load_models()
 
     if source_name not in _flagged_cache:
         lo, hi = SOURCE_BOUNDS[source_name]
@@ -495,8 +601,22 @@ def score_all_windows(chain_indices: list[int]) -> list[dict]:
     """
     Score every non-overlapping SEQ_W window of the full chain with the TransformerAE.
     Returns one dict per window: {start, score, above_threshold, window_indices}.
+    Returns [] when sequence artifacts are unavailable (demo mode).
     """
     _load_models()
+
+    if _X_m_seq is None or _seq_model is None:
+        # Demo fallback: no per-window scoring available, return synthetic flat windows
+        rows = chain_indices
+        out = []
+        for s in range(0, max(0, len(rows) - SEQ_W + 1), SEQ_STRIDE):
+            out.append({
+                "start":           int(s),
+                "score":           0.0,
+                "above_threshold": False,
+                "window_indices":  [int(r) for r in rows[s: s + SEQ_W]],
+            })
+        return out
 
     rows    = chain_indices
     windows, starts = [], []
@@ -514,10 +634,10 @@ def score_all_windows(chain_indices: list[int]) -> list[dict]:
 
     return [
         {
-            "start":           start,
+            "start":           int(start),
             "score":           round(float(sc), 4),
-            "above_threshold": float(sc) >= SEQ_THRESHOLD,
-            "window_indices":  rows[start: start + SEQ_W],
+            "above_threshold": bool(float(sc) >= SEQ_THRESHOLD),
+            "window_indices":  [int(r) for r in rows[start: start + SEQ_W]],
         }
         for start, sc in zip(starts, scores)
     ]
@@ -527,11 +647,15 @@ def score_chain_events(chain_indices: list[int]) -> list[dict]:
     """
     Run the single-event AE on the peak window of a chain.
     Returns one dict per event: {row, event_id, eid_name, image, ae_score, fields}.
+    Falls back to ae_score=0.0 when AE artifacts are unavailable (demo mode).
     """
     _load_models()
     _load_data()
 
-    scores = _score_events_ae(chain_indices, _X_m_ae)
+    if _X_m_ae is not None and _ae_model is not None:
+        scores = _score_events_ae(chain_indices, _X_m_ae)
+    else:
+        scores = np.zeros(len(chain_indices), dtype=np.float32)
     result = []
     for i, (r, sc) in enumerate(zip(chain_indices, scores)):
         ev     = _events_m.iloc[r]
@@ -543,9 +667,9 @@ def score_chain_events(chain_indices: list[int]) -> list[dict]:
             if val and val not in _SKIP:
                 fields[field] = val
         result.append({
-            "idx":      i,
+            "idx":      int(i),
             "row":      int(r),
-            "event_id": int(eid) if str(eid).isdigit() else eid,
+            "event_id": int(eid) if str(eid).isdigit() else str(eid),
             "eid_name": EID_NAMES.get(int(eid), "") if str(eid).isdigit() else "",
             "image":    str(ev.get("image", "")).split("\\")[-1],
             "ae_score": round(float(sc), 4),

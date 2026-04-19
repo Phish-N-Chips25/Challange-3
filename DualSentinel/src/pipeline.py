@@ -147,6 +147,7 @@ def run_pipeline(
     skip_detectors: bool = False,
     threshold: Optional[float] = None,
     evaluate: bool = False,
+    max_rows: Optional[int] = None,
 ) -> dict:
     """
     Pipeline completo. Devolve dict com resultados e caminhos de output.
@@ -163,8 +164,12 @@ def run_pipeline(
     console.print(f"[bold]Step 1:[/bold] Parsing {input_path.name}...")
     if input_path.suffix.lower() == ".evtx":
         df = parse_evtx(input_path)
+        if max_rows:
+            df = df.head(max_rows)
     else:
-        df = parse_csv(input_path, dataset=dataset)
+        df = parse_csv(input_path, dataset=dataset, nrows=max_rows)
+    if max_rows:
+        console.print(f"  → Limitado a {max_rows} linhas")
 
     if df.empty:
         console.print("[red]Erro: nenhum evento carregado.")

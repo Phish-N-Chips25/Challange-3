@@ -29,14 +29,44 @@ _BM25_FILENAME   = "bm25_index.pkl"
 
 
 def _emb_device() -> str:
-    """Return 'cuda' if a GPU is available, otherwise 'cpu'."""
+    """Return 'cuda' if a GPU is available *and* compatible with the installed
+    PyTorch build, otherwise 'cpu'.
+
+    Honours CHROMA_EMB_DEVICE env-var as an explicit override
+    (e.g. CHROMA_EMB_DEVICE=cpu to force CPU).
+    """
+    import os
+    override = os.getenv("CHROMA_EMB_DEVICE", "").strip().lower()
+    if override in {"cpu", "cuda"}:
+        logger.debug("Embedding device override: %s", override)
+        return override
     try:
         import torch
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        if not torch.cuda.is_available():
+            return "cpu"
+        # Verify the GPU's compute capability is supported by this torch build.
+        # If the wheel was built for older sm_*, sm_120 (RTX 50xx) will fail at
+        # kernel launch. Probe defensively.
+        try:
+            major, minor = torch.cuda.get_device_capability(0)
+            supported = torch.cuda.get_arch_list()  # e.g. ['sm_50', ..., 'sm_90']
+            tag = f"sm_{major}{minor}"
+            if supported and tag not in supported and not any(
+                int(s.removeprefix("sm_")) >= int(tag.removeprefix("sm_"))
+                for s in supported if s.startswith("sm_")
+            ):
+                logger.warning(
+                    "GPU compute capability %s not supported by torch (%s); "
+                    "falling back to CPU. Override with CHROMA_EMB_DEVICE=cuda.",
+                    tag, supported,
+                )
+                return "cpu"
+        except Exception as e:  # noqa: BLE001
+            logger.debug("CUDA capability probe failed: %s; falling back to CPU.", e)
+            return "cpu"
+        return "cuda"
     except ImportError:
-        device = "cpu"
-    logger.debug("Embedding device: %s", device)
-    return device
+        return "cpu"
 
 
 # ── Tokeniser (shared by ingest and retrieval) ────────────────────────────────

@@ -18,6 +18,13 @@ import numpy as np
 import pandas as pd
 import typer
 
+from embeddings import (
+    build_window_embedding,
+    EMBEDDING_DIM,
+    SMART_FEATURE_DIM,
+    SMART_FEATURE_NAMES,
+)
+
 logger = logging.getLogger(__name__)
 
 # Sysmon EventIDs relevantes para deteção de anomalias
@@ -78,12 +85,17 @@ class WindowFeatures:
     process_access_count: int = 0       # EventID 10 — ProcessAccess (LSASS credential access)
     driver_load_count: int = 0          # EventID 6  — Driver loaded (rootkit / tamper)
     file_delete_count: int = 0          # EventID 23 — File deleted (destruction / ransomware)
+    # Embeddings + smart features (preenchidos por make_windows)
+    embedding: np.ndarray = field(default_factory=lambda: np.zeros(EMBEDDING_DIM, dtype=np.float32))
+    smart_features: dict = field(default_factory=dict)
     # Lista de eventos resumidos para o evidence pack do judge
     event_summaries: list = field(default_factory=list)
 
     def to_feature_vector(self) -> np.ndarray:
-        """Converte para array numérico para ML."""
-        return np.array([
+        """Converte para array numérico para ML.
+        Concatena: counts/entropy clássicos + smart_features + embedding compacto.
+        """
+        base = np.array([
             self.event_count,
             self.unique_event_ids,
             self.unique_processes,
@@ -106,12 +118,23 @@ class WindowFeatures:
             self.driver_load_count,
             self.file_delete_count,
         ], dtype=np.float32)
+        smart = np.array(
+            [float(self.smart_features.get(k, 0.0)) for k in SMART_FEATURE_NAMES],
+            dtype=np.float32,
+        )
+        emb = np.asarray(self.embedding, dtype=np.float32)
+        if emb.size != EMBEDDING_DIM:
+            emb = np.zeros(EMBEDDING_DIM, dtype=np.float32)
+        return np.concatenate([base, smart, emb])
 
     def to_dict(self) -> dict:
-        d = {k: v for k, v in self.__dict__.items() if k != "event_summaries"}
+        d = {k: v for k, v in self.__dict__.items()
+             if k not in ("event_summaries", "embedding")}
         d["window_start"] = self.window_start.isoformat()
         d["window_end"] = self.window_end.isoformat()
         d["event_summaries"] = self.event_summaries
+        # embedding pode ser serializado como list para inspeção, mas é grande
+        # e raramente útil em JSON; omitimos por defeito
         return d
 
 
@@ -407,6 +430,14 @@ def make_windows(
         wf.process_access_count = int((chunk["event_id"] == 10).sum())  # ProcessAccess (LSASS)
         wf.driver_load_count    = int((chunk["event_id"] == 6).sum())   # Driver loaded
         wf.file_delete_count    = int((chunk["event_id"] == 23).sum())  # File deleted
+
+        # Embeddings + smart features (cmdline / registry / paths / ports / proc-tree)
+        try:
+            emb_data = build_window_embedding(chunk)
+            wf.embedding = emb_data["embedding"]
+            wf.smart_features = emb_data["smart_features"]
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"Embedding extraction failed for window {current}: {e}")
 
         # Criar resumo textual dos eventos para o evidence pack
         # itertuples is ~10x faster than iterrows for simple field access

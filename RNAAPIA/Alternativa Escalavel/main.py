@@ -1,8 +1,19 @@
 import cv2
 import numpy as np
 import os
+from pathlib import Path
+from PIL import Image
 from sklearn.metrics.pairwise import cosine_similarity
 from insightface.app import FaceAnalysis
+
+
+def ler_imagem(caminho: str):
+    """Lê uma imagem suportando paths com caracteres não-ASCII (Windows)."""
+    try:
+        img = np.array(Image.open(caminho).convert("RGB"))
+        return cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+    except Exception:
+        return None
 
 # ============================================================
 # CONFIGURAÇÃO
@@ -59,7 +70,7 @@ def carregar_base_de_dados(pasta=PASTA_BD):
                 continue
 
             caminho_foto = os.path.join(caminho_pessoa, foto)
-            imagem = cv2.imread(caminho_foto)
+            imagem = ler_imagem(caminho_foto)
             if imagem is None:
                 print(f"  [AVISO] Não foi possível ler: {foto}")
                 continue
