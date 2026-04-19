@@ -8,23 +8,38 @@ autenticação e o resultado aparece no ecrã.
 from __future__ import annotations
 
 import os
+import sys
 import traceback
+from pathlib import Path
 
 from flask import Flask, jsonify, redirect, render_template_string, request, session, url_for
 from werkzeug.exceptions import HTTPException
 
-try:
-    from frontend.servico_autenticacao import autenticar_detalhado, listar_alternativas
-    from frontend.ui_registry import obter_alternativa_ui
-    from frontend.alt1 import precarregar_recursos_alt1
-except ModuleNotFoundError:
-    from servico_autenticacao import autenticar_detalhado, listar_alternativas
-    from ui_registry import obter_alternativa_ui
-    from alt1 import precarregar_recursos_alt1
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from frontend.servico_autenticacao import autenticar_detalhado, listar_alternativas
+from frontend.ui_registry import obter_alternativa_ui
 
 
 app = Flask(__name__)
 app.secret_key = "neongate-dev-secret-key-change-me"
+app.config["PROPAGATE_EXCEPTIONS"] = False
+APP_VERSION = "2026-04-18-alt-debug-2"
+
+
+def _erro_json(status: int, motivo: str, mensagem: str) -> tuple[object, int]:
+    return jsonify(
+        {
+            "allowed": False,
+            "score": None,
+            "threshold": None,
+            "matched_name": None,
+            "reason": motivo,
+            "error": mensagem,
+        }
+    ), status
 
 
 def _env_bool(nome: str, default: bool = False) -> bool:
@@ -37,6 +52,7 @@ def _env_bool(nome: str, default: bool = False) -> bool:
 def _precarregar_alt1_no_arranque() -> None:
     """Aquece recursos da Alt1 para reduzir latência do primeiro /auth."""
     try:
+        from frontend.alt1 import precarregar_recursos_alt1
         total = precarregar_recursos_alt1()
         print(f"[startup] Alt1 pre-carregada com {total} pessoa(s) na base cacheada.")
     except Exception as exc:
@@ -44,7 +60,40 @@ def _precarregar_alt1_no_arranque() -> None:
         print(f"[startup] Aviso: falha no pre-carregamento da Alt1: {exc}")
 
 
-_precarregar_alt1_no_arranque()
+def _precarregar_alternativas_no_arranque() -> None:
+    """Aquece tambÃ©m Alt2/Alt3 para evitar que o primeiro pedido rebente o timeout."""
+    _precarregar_alt1_no_arranque()
+
+    for codigo, modulo_nome in (
+        ("ALT2", "frontend.alt2"),
+        ("ALT3", "frontend.alt3"),
+    ):
+        try:
+            modulo = __import__(modulo_nome, fromlist=["obter_modelo"])
+            modulo.obter_modelo()
+            print(f"[startup] {codigo} pre-carregada.")
+        except Exception as exc:
+            print(f"[startup] Aviso: falha no pre-carregamento da {codigo}: {exc}")
+
+
+_precarregar_alternativas_no_arranque()
+
+
+@app.after_request
+def _inject_debug_headers(response):
+    response.headers["X-App-Version"] = APP_VERSION
+    return response
+
+
+@app.errorhandler(HTTPException)
+def _handle_http_exception(exc: HTTPException):
+    return _erro_json(exc.code or 500, "erro_http", exc.description)
+
+
+@app.errorhandler(Exception)
+def _handle_exception(exc: Exception):
+    traceback.print_exc()
+    return _erro_json(500, "erro_interno", str(exc))
 
 
 HTML = """
@@ -140,6 +189,16 @@ HTML = """
       gap: 10px;
       color: var(--text);
       font-weight: 700;
+    }
+    .build-tag {
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(103, 232, 249, 0.18);
+      background: rgba(2, 6, 23, 0.35);
+      color: #b8f3ff;
+      font-size: 0.72rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
     }
     .dot {
       width: 10px;
@@ -443,7 +502,7 @@ HTML = """
   <main class="shell">
     <div class="topbar">
       <div class="brand"><span class="dot"></span> Phish'N'Chips</div>
-      <div>Portal de acesso da equipa</div>
+      <div class="build-tag">Build {{ app_version }}</div>
     </div>
 
     <section class="hero">
@@ -659,16 +718,34 @@ HTML = """
 
       const response = await fetch('/auth', { method: 'POST', body: formData });
       const raw = await response.text();
-      let data;
-      try {
-        data = JSON.parse(raw);
-      } catch {
-        throw new Error('Resposta inválida do servidor (' + response.status + ')');
+      const contentType = (response.headers.get('content-type') || '').toLowerCase();
+      let data = null;
+
+      if (raw) {
+        try {
+          data = JSON.parse(raw);
+        } catch {
+          data = null;
+        }
       }
 
-      if (!response.ok) {
-        throw new Error(data.error || ('Erro HTTP ' + response.status));
+      if (!data && !contentType.includes('application/json')) {
+        const fallbackMessage = raw
+          ? raw.replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ').trim().slice(0, 180)
+          : 'Resposta vazia do servidor';
+        throw new Error('Erro HTTP ' + response.status + ': ' + fallbackMessage);
       }
+
+      if (!data) {
+        const fallbackMessage = raw
+          ? raw.replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ').trim().slice(0, 180)
+          : 'Resposta vazia do servidor';
+        throw new Error('Resposta inválida do servidor (' + response.status + '): ' + fallbackMessage);
+      }
+
+        if (!response.ok) {
+          throw new Error(data.error || ('Erro HTTP ' + response.status));
+        }
 
       return data;
     }
@@ -736,6 +813,7 @@ HTML = """
           }
 
           const reasonText = reasonMap[data.reason] || (data.reason || '-');
+          const errorText = data.error ? (' Detalhe: ' + data.error) : '';
           const matchedName = data.matched_name || 'Utilizador';
 
           setProgress(
@@ -752,7 +830,7 @@ HTML = """
             value: aboveThreshold ? ('A validar ' + escapeHtml(matchedName)) : 'Acesso ainda não confirmado',
             detail: aboveThreshold
               ? ('Score estável acima do threshold. Motivo: ' + reasonText)
-              : ('Motivo: ' + reasonText + '. Continua a enquadrar o rosto para aumentar a percentagem.'),
+              : ('Motivo: ' + reasonText + '.' + errorText + ' Continua a enquadrar o rosto para aumentar a percentagem.'),
             metrics: [
               '<strong>Score:</strong> ' + currentScoreText,
               '<strong>Threshold:</strong> ' + currentThresholdText,
@@ -811,7 +889,7 @@ HTML = """
         renderStatus({
           tone: 'bad',
           value: 'Erro na validação',
-          detail: msg,
+          detail: msg + ' | Build: {{ app_version }}',
           metrics: [
             '<strong>Score:</strong> ' + currentScoreText,
             '<strong>Threshold:</strong> ' + currentThresholdText
@@ -973,6 +1051,7 @@ def home():
         HTML,
         alternativas=alternativas,
         alternativa_default=alternativas_codigos[0],
+        app_version=APP_VERSION,
     )
 
 
@@ -981,11 +1060,11 @@ def auth():
     try:
         frame = request.files.get("frame")
         if frame is None:
-            return jsonify({"allowed": False, "error": "frame ausente"}), 400
+            return _erro_json(400, "imagem_invalida", "frame ausente")
 
         frame_bytes = frame.read()
         if not frame_bytes:
-            return jsonify({"allowed": False, "error": "frame vazio"}), 400
+            return _erro_json(400, "imagem_invalida", "frame vazio")
 
         alternativas_validas = set(listar_alternativas())
         alternativa = (request.form.get("alternativa") or "").strip().lower()
@@ -1015,6 +1094,13 @@ def auth():
                 "error": exc.description,
             }
         ), exc.code
+    except OSError as exc:
+        return _erro_json(
+            500,
+            "dependencia_ausente",
+            "Falha ao carregar dependencia nativa do modelo (PyTorch/DLL). "
+            f"Detalhe: {exc}",
+        )
     except Exception as exc:
         traceback.print_exc()
         return jsonify(
