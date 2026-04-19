@@ -188,6 +188,74 @@
     .event-summary-list { display:flex; flex-direction:column; gap:3px; max-height:260px; overflow-y:auto; }
     .event-summary-row { font-size:.76rem; font-family:monospace; color:#94a3b8; padding:4px 8px; border-radius:6px; background:rgba(2,6,23,0.38); line-height:1.45; word-break:break-all; }
     .fp-high   { color:#fca5a5; } .fp-medium { color:#fde68a; } .fp-low { color:#86efac; }
+
+    /* ── Help / explanation widgets ── */
+    .help-tip {
+      display:inline-flex; align-items:center; justify-content:center;
+      width:14px; height:14px; border-radius:999px; margin-left:6px;
+      background:rgba(103,232,249,0.12); color:#67e8f9;
+      font-size:.68rem; font-weight:700; cursor:help;
+      border:1px solid rgba(103,232,249,0.3); vertical-align:middle;
+      font-family: Inter, system-ui, sans-serif;
+    }
+    .help-tip:hover { background:rgba(103,232,249,0.25); }
+    .help-text {
+      font-size:.72rem; color:var(--muted); margin-top:3px;
+      line-height:1.45; font-style:italic;
+    }
+    .intro-card {
+      background:rgba(15,23,42,0.55); border:1px dashed rgba(103,232,249,0.25);
+      border-radius:12px; padding:14px 16px; margin-bottom:14px;
+      font-size:.82rem; color:#cbd5e1; line-height:1.55;
+    }
+    .intro-card strong { color:#67e8f9; }
+    .intro-card .steps {
+      display:grid; grid-template-columns:repeat(auto-fit, minmax(130px,1fr));
+      gap:8px; margin-top:10px;
+    }
+    .intro-card .step {
+      background:rgba(2,6,23,0.5); border:1px solid rgba(148,163,184,0.12);
+      border-radius:8px; padding:8px 10px; font-size:.74rem; line-height:1.4;
+    }
+    .intro-card .step b { color:#c084fc; }
+
+    /* ── Progress tracker (live pipeline stages) ── */
+    .ds2-stages {
+      display:flex; flex-direction:column; gap:4px;
+      margin-top:6px; padding:8px;
+      background:rgba(2,6,23,0.55);
+      border:1px solid rgba(148,163,184,0.1);
+      border-radius:10px;
+    }
+    .ds2-stage {
+      display:flex; align-items:center; gap:8px;
+      padding:4px 6px; font-size:.74rem; color:var(--muted);
+      border-radius:6px; transition:background 150ms, color 150ms;
+    }
+    .ds2-stage .dot-ico {
+      width:14px; height:14px; border-radius:999px;
+      border:1.5px solid rgba(148,163,184,0.35);
+      display:inline-flex; align-items:center; justify-content:center;
+      font-size:.6rem; flex-shrink:0;
+    }
+    .ds2-stage.pending .dot-ico { background:transparent; }
+    .ds2-stage.active  { color:#e2e8f0; background:rgba(103,232,249,0.08); }
+    .ds2-stage.active  .dot-ico {
+      border-color:#67e8f9; background:rgba(103,232,249,0.2); color:#67e8f9;
+      animation: ds2stagepulse 1.4s ease-in-out infinite;
+    }
+    @keyframes ds2stagepulse { 0%,100%{box-shadow:0 0 0 0 rgba(103,232,249,.4)} 50%{box-shadow:0 0 0 4px rgba(103,232,249,0)} }
+    .ds2-stage.done    { color:#86efac; }
+    .ds2-stage.done    .dot-ico { background:#4ade80; border-color:#4ade80; color:#020617; }
+    .ds2-stage.error   { color:#fca5a5; }
+    .ds2-stage.error   .dot-ico { background:#f87171; border-color:#f87171; color:#020617; }
+    .ds2-stage-label { flex:1; }
+    .ds2-stage-extra { font-family:monospace; font-size:.7rem; color:#67e8f9; }
+    .ds2-progress-label {
+      display:flex; justify-content:space-between; align-items:baseline;
+      font-size:.72rem; color:var(--muted); margin-top:4px;
+    }
+    .ds2-progress-pct { font-family:monospace; color:#67e8f9; }
   </style>
 </head>
 <body>
@@ -204,23 +272,23 @@
   </nav>
 
   <div class="statusbar">
-    <span class="status-chip" id="ollamaChip">
+    <span class="status-chip" id="ollamaChip" title="Serviço local que corre os modelos SLM/LLM. Se ficar vermelho, arranca com: ollama serve">
       <span class="led yellow" id="ollamaLed"></span>
       <span id="ollamaLabel">Ollama — a verificar...</span>
     </span>
-    <span class="status-chip" id="slmChip">
+    <span class="status-chip" id="slmChip" title="Small Language Model — faz o primeiro triagem rápido das janelas suspeitas (pré-diagnóstico por phi3). Tem de estar instalado via: ollama pull phi3:medium">
       <span class="led" id="slmLed"></span>
       <span id="slmLabel">SLM — ?</span>
     </span>
-    <span class="status-chip" id="judgeChip">
+    <span class="status-chip" id="judgeChip" title="LLM Judge — segundo sentinel que valida o pré-diagnóstico do SLM, atribui score 0-10 e mapeia técnicas ATT&CK. Instalar via: ollama pull llama3.2">
       <span class="led" id="judgeLed"></span>
       <span id="judgeLabel">Judge — ?</span>
     </span>
-    <span class="status-chip" id="kbChip">
+    <span class="status-chip" id="kbChip" title="Base de conhecimento MITRE ATT&CK indexada (Chroma + BM25 + RRF). Permite retrieval híbrido das técnicas mais parecidas com cada janela.">
       <span class="led" id="kbLed"></span>
       <span id="kbLabel">ATT&amp;CK KB — ?</span>
     </span>
-    <span class="status-chip" id="lastRunChip">
+    <span class="status-chip" id="lastRunChip" title="Última execução completa do pipeline. Podes revê-la no separador Histórico.">
       <span class="led" id="lastRunLed"></span>
       <span id="lastRunLabel">Última run — nenhuma</span>
     </span>
@@ -240,7 +308,20 @@
 
     <section class="detail-panel">
       <div class="empty-state" id="emptyState">
-        Configura uma análise no painel à esquerda e clica em <strong style="color:#67e8f9">Analisar</strong>.
+        <div style="max-width:540px">
+          <div style="font-size:1.05rem;color:#e2e8f0;margin-bottom:10px">
+            Bem-vindo ao <strong style="color:#67e8f9">DualSentinel</strong>
+          </div>
+          <div style="font-size:.85rem;line-height:1.6;color:#94a3b8;margin-bottom:14px">
+            Pipeline de deteção de anomalias em logs Windows Sysmon usando <strong>dois sentinelas LLM</strong>:
+            um SLM rápido que faz pré-diagnóstico e um LLM Judge que valida, refuta e pontua (0-10)
+            com ancoragem em MITRE ATT&amp;CK via RAG.
+          </div>
+          <div style="font-size:.82rem;color:#cbd5e1">
+            → Configura uma análise à esquerda e clica em
+            <strong style="color:#67e8f9">Analisar</strong>.
+          </div>
+        </div>
       </div>
       <div id="detailContent" style="display:none"></div>
     </section>
@@ -256,6 +337,10 @@
     let activeChainIdx= null;
     let cachedFiles   = [];
     let cachedHistory = [];
+    let ds2SystemReady = false;  // true only when Ollama+SLM+Judge+KB LEDs all green
+    let installedModels = [];    // Ollama models available for the dropdowns
+    let defaultSlmModel   = '';
+    let defaultJudgeModel = '';
 
     const emptyState    = document.getElementById('emptyState');
     const detailContent = document.getElementById('detailContent');
@@ -263,6 +348,13 @@
 
     function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
     function scoreClass(s) { return s >= 0.85 ? 'score-high' : s >= 0.70 ? 'score-medium' : 'score-low'; }
+
+    // Inline help widget — produces a small "?" circle with an explanatory tooltip.
+    // Use for field labels, card headers, metric columns, anywhere the user may
+    // wonder "what does this mean?". Hover to see the explanation.
+    function helpTip(text) {
+      return `<span class="help-tip" title="${esc(text)}">?</span>`;
+    }
     function verdictClass(v) {
       const l = (v || '').toLowerCase();
       if (l.includes('malicious') || l.includes('highly')) return 'verdict-malicious';
@@ -301,6 +393,16 @@
           ? `ATT&CK KB — ${h.kb_techniques || '?'} técnicas`
           : 'ATT&CK KB — não indexada';
 
+        // Cache installed Ollama models + defaults for the run-form dropdowns.
+        if (Array.isArray(h.installed_models)) installedModels = h.installed_models;
+        if (h.slm_model)   defaultSlmModel   = h.slm_model;
+        if (h.judge_model) defaultJudgeModel = h.judge_model;
+        refreshDs2ModelSelects();
+
+        // Gate "Nova análise": all four core LEDs must be green
+        ds2SystemReady = !!(ollamaUp && slmReady && judgeReady && h.kb_ready);
+        applyDs2RunGate();
+
         // Last run
         if (h.last_run) {
           document.getElementById('lastRunLed').className = 'led green';
@@ -315,6 +417,44 @@
       } catch (err) {
         document.getElementById('ollamaLed').className = 'led red';
         document.getElementById('ollamaLabel').textContent = 'Health check falhou';
+        ds2SystemReady = false;
+        applyDs2RunGate();
+      }
+    }
+
+    // Populate / refresh SLM + Judge dropdowns whenever the run form is
+    // visible and the installed-models list changes. Preserves the user's
+    // current selection if still valid; otherwise falls back to the default
+    // reported by the backend health endpoint.
+    function refreshDs2ModelSelects() {
+      ['ds2SlmModel', 'ds2JudgeModel'].forEach(id => {
+        const sel = document.getElementById(id);
+        if (!sel) return;
+        const prev = sel.value;
+        const dflt = (id === 'ds2SlmModel') ? defaultSlmModel : defaultJudgeModel;
+        const opts = installedModels.length
+          ? installedModels.map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join('')
+          : '<option value="">— sem modelos instalados —</option>';
+        sel.innerHTML = opts;
+        // restore previous selection, or use default
+        if (prev && installedModels.includes(prev)) sel.value = prev;
+        else if (dflt && installedModels.includes(dflt)) sel.value = dflt;
+      });
+    }
+    // The button unlocks only when Ollama + SLM + Judge + KB are all green.
+    function applyDs2RunGate() {
+      const btn = document.getElementById('ds2RunBtn');
+      if (!btn) return;  // form not rendered (different tab)
+      // Don't override the "⏳ A correr..." state mid-pipeline.
+      if (btn.dataset.running === '1') return;
+      btn.disabled    = !ds2SystemReady;
+      btn.title       = ds2SystemReady
+        ? ''
+        : 'Aguarda que Ollama, SLM, Judge e ATT&CK KB fiquem verdes na barra de estado.';
+      btn.textContent = ds2SystemReady ? '▶ Analisar' : '🔒 Sistema não pronto';
+      const statusEl = document.getElementById('ds2Status');
+      if (statusEl && !ds2SystemReady) {
+        statusEl.textContent = 'Aguarda que todos os componentes (Ollama, SLM, Judge, KB) fiquem verdes.';
       }
     }
 
@@ -346,12 +486,23 @@
 
       panelBody.innerHTML = `
         <div class="ds2-panel">
+          <div class="intro-card">
+            <div><strong>Como funciona:</strong> o pipeline pré-processa os logs em janelas de 60s,
+            aplica detetores heurísticos + RAG ATT&CK, e só as janelas acima do threshold
+            são enviadas para os dois LLMs (SLM → Judge).</div>
+            <div class="steps">
+              <div class="step"><b>1. Preprocess</b><br>Parse + windowing 60s + features</div>
+              <div class="step"><b>2. Detect</b><br>Regras ATT&CK + heurístico + RAG</div>
+              <div class="step"><b>3. SLM</b><br>phi3 triagem rápida</div>
+              <div class="step"><b>4. Judge</b><br>llama3.2 valida + score 0-10</div>
+            </div>
+          </div>
           <div class="ds2-row">
-            <span class="ds2-label">Ficheiro de amostra</span>
+            <span class="ds2-label">Ficheiro de amostra ${helpTip('CSV ou EVTX em data/samples/. Usar LMD-2023 para lateral movement, SILRAD para ransomware, Splunk para Sysmon com labels ATT&CK.')}</span>
             <select class="ds2-select" id="ds2File">${fileOptions}</select>
           </div>
           <div class="ds2-row">
-            <span class="ds2-label">Tipo de dataset</span>
+            <span class="ds2-label">Tipo de dataset ${helpTip('Schema do CSV. Determina como as colunas são interpretadas (EventID, ProcessName, etc.). Escolhe de acordo com o ficheiro selecionado.')}</span>
             <select class="ds2-select" id="ds2Dataset">
               <option value="lmd">LMD-2023</option>
               <option value="splunk">Splunk</option>
@@ -359,14 +510,14 @@
             </select>
           </div>
           <div class="ds2-row">
-            <span class="ds2-label">Threshold de anomalia: <span id="ds2ThresholdLabel">0.60</span></span>
+            <span class="ds2-label">Threshold de anomalia: <span id="ds2ThresholdLabel">0.60</span> ${helpTip('Score mínimo do detetor heurístico (0-1) para a janela ir aos LLMs. Mais baixo = mais chamadas LLM (mais lento, mais recall). Mais alto = só as mais suspeitas (mais rápido, mais precisão).')}</span>
             <div class="ds2-slider-row">
               <input type="range" class="ds2-slider" id="ds2Threshold" min="0.05" max="1.0" step="0.05" value="0.6"
                 oninput="document.getElementById('ds2ThresholdLabel').textContent = parseFloat(this.value).toFixed(2)">
             </div>
           </div>
           <div class="ds2-row">
-            <span class="ds2-label">Linhas a analisar</span>
+            <span class="ds2-label">Linhas a analisar ${helpTip('Quantas linhas do CSV processar. 2k-5k é suficiente para demos; "Todas" pode demorar horas em datasets grandes como LMD-2023 (1.75M linhas).')}</span>
             <select class="ds2-select" id="ds2MaxRows">
               <option value="2000">2 000 (rápido)</option>
               <option value="5000" selected>5 000 (padrão)</option>
@@ -377,21 +528,31 @@
           </div>
           <div class="ds2-mini-row">
             <div class="ds2-row">
-              <span class="ds2-label">Max LLM calls</span>
+              <span class="ds2-label">Modelo SLM ${helpTip('Small Language Model que faz o pré-diagnóstico rápido das janelas suspeitas. Recomendado: phi3:mini (3.8B, rápido) ou phi3:medium (14B, mais preciso).')}</span>
+              <select class="ds2-select" id="ds2SlmModel"></select>
+            </div>
+            <div class="ds2-row">
+              <span class="ds2-label">Modelo Judge ${helpTip('LLM que faz validação final com score 0-10 e mapeamento ATT&CK. Recomendado: llama3.2 (3B, rápido) ou phi4:14b (mais preciso).')}</span>
+              <select class="ds2-select" id="ds2JudgeModel"></select>
+            </div>
+          </div>
+          <div class="ds2-mini-row">
+            <div class="ds2-row">
+              <span class="ds2-label">Max LLM calls ${helpTip('Limita o total de chamadas a SLM + Judge combinados. Útil para smoke-tests: --max-llm-calls 20 = ~1 min. Vazio = sem limite.')}</span>
               <input type="number" class="ds2-input" id="ds2MaxLlm" placeholder="sem limite" min="1" step="1">
             </div>
             <div class="ds2-row">
-              <span class="ds2-label">Seed</span>
+              <span class="ds2-label">Seed ${helpTip('Seed aleatória (numpy + random + PYTHONHASHSEED + torch). Mesma seed + mesmo input → mesmos resultados. 42 é o default para reprodutibilidade.')}</span>
               <input type="number" class="ds2-input" id="ds2Seed" value="42" min="0" step="1">
             </div>
           </div>
-          <label class="ds2-toggle-row">
+          <label class="ds2-toggle-row" title="Se ativado, executa apenas o detetor heurístico sem chamar SLM nem Judge. Útil para validar o pipeline clássico sem pagar o custo dos LLMs.">
             <input type="checkbox" id="ds2SkipJudge"> Saltar LLM Judge (mais rápido)
           </label>
-          <label class="ds2-toggle-row">
+          <label class="ds2-toggle-row" title="Ativa retrieval híbrido (Chroma + BM25 + RRF k=60) da KB ATT&CK para aumentar o detetor e dar contexto ao Judge. Recomendado manter ligado.">
             <input type="checkbox" id="ds2UseKb" checked> Usar ATT&amp;CK KB (RAG)
           </label>
-          <label class="ds2-toggle-row">
+          <label class="ds2-toggle-row" title="Se o CSV tiver coluna 'label' com ground-truth (attack / benign / nome da técnica), calcula Precision, Recall, F1, ROC-AUC, PR-AUC e métricas multi-label por técnica MITRE.">
             <input type="checkbox" id="ds2Evaluate"> Calcular métricas (--evaluate)
           </label>
           <button class="ds2-run-btn" id="ds2RunBtn" onclick="startDs2Run()">▶ Analisar</button>
@@ -400,11 +561,14 @@
             <div class="ds2-progress-fill" id="ds2ProgressFill"></div>
           </div>
         </div>`;
+      applyDs2RunGate();
+      refreshDs2ModelSelects();
     }
 
     async function startDs2Run() {
       const fileEl = document.getElementById('ds2File');
       if (!fileEl || !fileEl.value) return;
+      if (!ds2SystemReady) return;  // hard guard: status bar must be fully green
 
       const btn        = document.getElementById('ds2RunBtn');
       const statusEl   = document.getElementById('ds2Status');
@@ -412,13 +576,43 @@
       const fillEl     = document.getElementById('ds2ProgressFill');
 
       btn.disabled = true;
+      btn.dataset.running = '1';
       btn.textContent = '⏳ A correr...';
       progressEl.style.display = '';
       fillEl.className = 'ds2-progress-fill';
-      fillEl.style.width = '15%';
+      fillEl.style.width = '2%';
       statusEl.textContent = 'A iniciar pipeline...';
-      emptyState.style.display = ''; emptyState.innerHTML = 'Pipeline em execução — os resultados aparecem quando terminar.';
-      detailContent.style.display = 'none';
+
+      // Build the rich live-progress panel in the main (right) area — replaces
+      // the generic empty state with a stage tracker that updates in real time.
+      emptyState.style.display = 'none';
+      detailContent.style.display = '';
+      detailContent.innerHTML = `
+        <div class="section-card">
+          <h3>Pipeline em execução ${helpTip('Feedback ao vivo de cada estágio do DualSentinel. Os resultados aparecem automaticamente quando terminar.')}</h3>
+          <div class="ds2-progress-label" id="ds2ProgressLabel" style="margin-bottom:6px">
+            <span id="ds2StageLabel">A iniciar…</span>
+            <span class="ds2-progress-pct" id="ds2ProgressPct">0%</span>
+          </div>
+          <div class="ds2-progress" style="height:8px">
+            <div class="ds2-progress-fill" id="ds2ProgressFillBig" style="width:2%"></div>
+          </div>
+          <div class="ds2-status" id="ds2StatusBig" style="margin-top:8px;font-size:.86rem;color:#cbd5e1">
+            A iniciar pipeline…
+          </div>
+          <div class="ds2-stages" id="ds2Stages" style="margin-top:12px">
+            <div class="ds2-stage pending" data-stage="parse"><span class="dot-ico">1</span><span class="ds2-stage-label">Parse do ficheiro</span></div>
+            <div class="ds2-stage pending" data-stage="windowing"><span class="dot-ico">2</span><span class="ds2-stage-label">Windowing 60s + chains</span></div>
+            <div class="ds2-stage pending" data-stage="detect"><span class="dot-ico">3</span><span class="ds2-stage-label">Regras ATT&CK + heurístico</span><span class="ds2-stage-extra" data-extra="detect"></span></div>
+            <div class="ds2-stage pending" data-stage="slm"><span class="dot-ico">4</span><span class="ds2-stage-label">SLM pré-diagnóstico</span><span class="ds2-stage-extra" data-extra="slm"></span></div>
+            <div class="ds2-stage pending" data-stage="judge"><span class="dot-ico">5</span><span class="ds2-stage-label">LLM Judge validação</span><span class="ds2-stage-extra" data-extra="judge"></span></div>
+            <div class="ds2-stage pending" data-stage="report"><span class="dot-ico">6</span><span class="ds2-stage-label">Relatório Markdown</span></div>
+            <div class="ds2-stage pending" data-stage="metrics"><span class="dot-ico">7</span><span class="ds2-stage-label">Métricas (se --evaluate)</span></div>
+          </div>
+        </div>
+        <div class="section-card" style="color:var(--muted);font-size:.82rem;text-align:center">
+          Podes continuar a navegar pelos separadores à esquerda enquanto o pipeline corre.
+        </div>`;
 
       try {
         const resp = await fetch('/api/dualsentinel/run', {
@@ -436,6 +630,8 @@
             use_kb:        document.getElementById('ds2UseKb').checked,
             evaluate:      document.getElementById('ds2Evaluate').checked,
             seed:          parseInt(document.getElementById('ds2Seed').value || '42'),
+            slm_model:     document.getElementById('ds2SlmModel')?.value || '',
+            judge_model:   document.getElementById('ds2JudgeModel')?.value || '',
           }),
         }).then(r => r.json().then(j => { if (!r.ok) throw new Error(j.error || r.statusText); return j; }));
 
@@ -444,7 +640,68 @@
       } catch (err) {
         statusEl.textContent = 'Erro: ' + err.message;
         fillEl.className = 'ds2-progress-fill error';
-        btn.disabled = false; btn.textContent = '▶ Analisar';
+        delete btn.dataset.running;
+        applyDs2RunGate();
+      }
+    }
+
+    // Order matches the stages emitted by run_pipeline() in pipeline.py
+    const DS2_STAGE_ORDER = ['parse', 'windowing', 'detect', 'slm', 'judge', 'report', 'metrics'];
+
+    // Apply a progress event from /api/dualsentinel/status to the UI:
+    // moves the active stage, fills the bar, and refreshes sub-window counters.
+    function updateDs2Progress(s) {
+      const fillSidebar = document.getElementById('ds2ProgressFill');
+      const fillBig     = document.getElementById('ds2ProgressFillBig');
+      const statusEl    = document.getElementById('ds2Status');
+      const statusBig   = document.getElementById('ds2StatusBig');
+      const stageLbl    = document.getElementById('ds2StageLabel');
+      const pctEl       = document.getElementById('ds2ProgressPct');
+
+      const pct = Math.max(2, Math.min(100, Math.round((s.progress || 0) * 100)));
+      if (fillSidebar) fillSidebar.style.width = pct + '%';
+      if (fillBig)     fillBig.style.width     = pct + '%';
+      if (pctEl)       pctEl.textContent       = pct + '%';
+      const msg = s.message || s.status || '…';
+      if (statusEl)  statusEl.textContent  = msg;
+      if (statusBig) statusBig.textContent = msg;
+
+      const curIdx = DS2_STAGE_ORDER.indexOf(s.stage);
+      document.querySelectorAll('.ds2-stage').forEach(el => {
+        const name = el.dataset.stage;
+        const idx  = DS2_STAGE_ORDER.indexOf(name);
+        el.classList.remove('active', 'done', 'pending', 'error');
+        if (curIdx < 0)           el.classList.add('pending');
+        else if (idx < curIdx)    el.classList.add('done');
+        else if (idx === curIdx)  el.classList.add('active');
+        else                       el.classList.add('pending');
+      });
+
+      // Stage-specific extra info (e.g. flagged count, i/n counters)
+      const setExtra = (stage, txt) => {
+        const el = document.querySelector(`[data-extra="${stage}"]`);
+        if (el) el.textContent = txt || '';
+      };
+      if (s.flagged != null && s.total_windows != null) {
+        setExtra('detect', `${s.flagged}/${s.total_windows}`);
+      }
+      if (s.stage === 'slm' && s.sub_i != null && s.sub_n != null) {
+        setExtra('slm', `${s.sub_i}/${s.sub_n}`);
+      }
+      if (s.stage === 'judge' && s.sub_i != null && s.sub_n != null) {
+        setExtra('judge', `${s.sub_i}/${s.sub_n}`);
+      }
+      if (stageLbl) {
+        const labelMap = {
+          parse: 'Parse',
+          windowing: 'Windowing',
+          detect: 'Detect',
+          slm: 'SLM Analyst',
+          judge: 'LLM Judge',
+          report: 'Report',
+          metrics: 'Métricas',
+        };
+        stageLbl.textContent = labelMap[s.stage] || (s.stage || '');
       }
     }
 
@@ -453,24 +710,34 @@
       ds2PollTimer = setTimeout(async () => {
         try {
           const s = await fetch(`/api/dualsentinel/status/${ds2RunId}`).then(r => r.json());
-          const statusEl = document.getElementById('ds2Status');
-          const fillEl   = document.getElementById('ds2ProgressFill');
-          if (statusEl) statusEl.textContent = s.message || s.status;
+          const fillSidebar = document.getElementById('ds2ProgressFill');
+          const fillBig     = document.getElementById('ds2ProgressFillBig');
+          updateDs2Progress(s);
 
           if (s.status === 'done') {
-            if (fillEl) { fillEl.className = 'ds2-progress-fill done'; fillEl.style.width = '100%'; }
+            [fillSidebar, fillBig].forEach(el => {
+              if (el) { el.className = 'ds2-progress-fill done'; el.style.width = '100%'; }
+            });
+            document.querySelectorAll('.ds2-stage.active').forEach(el => {
+              el.classList.remove('active'); el.classList.add('done');
+            });
             await loadDs2Results();
             refreshStatusBar();
           } else if (s.status === 'error') {
-            if (fillEl) fillEl.className = 'ds2-progress-fill error';
+            [fillSidebar, fillBig].forEach(el => {
+              if (el) el.className = 'ds2-progress-fill error';
+            });
+            document.querySelectorAll('.ds2-stage.active').forEach(el => {
+              el.classList.remove('active'); el.classList.add('error');
+            });
             const btn = document.getElementById('ds2RunBtn');
-            if (btn) { btn.disabled = false; btn.textContent = '▶ Analisar'; }
+            if (btn) { delete btn.dataset.running; }
+            applyDs2RunGate();
           } else {
-            if (fillEl) fillEl.style.width = Math.min(85, parseInt(fillEl.style.width || '15') + 5) + '%';
             pollDs2Status();
           }
         } catch (_) { pollDs2Status(); }
-      }, 2000);
+      }, 1000);
     }
 
     async function loadDs2Results() {
@@ -485,7 +752,8 @@
         const statusEl = document.getElementById('ds2Status');
         if (statusEl) statusEl.textContent = 'Erro ao obter resultados: ' + err.message;
       } finally {
-        if (btn) { btn.disabled = false; btn.textContent = '▶ Analisar'; }
+        if (btn) { delete btn.dataset.running; }
+        applyDs2RunGate();
       }
     }
 
@@ -623,7 +891,7 @@
         const j   = metrics.judge;
         const tx  = metrics.techniques;
         metricsHtml = `<div class="section-card">
-          <h3>Métricas <span style="font-size:.72rem;color:var(--muted)">${metrics.n_labelled} janelas rotuladas · thr=${metrics.threshold}</span></h3>
+          <h3>Métricas ${helpTip('Avaliação quantitativa (só aparece se o CSV tinha coluna label). P=precision, R=recall, F1=média harmónica, ROC-AUC=separação geral, PR-AUC=robusto a classe desbalanceada. TP/FP/FN/TN = matriz de confusão.')}<span style="font-size:.72rem;color:var(--muted)">${metrics.n_labelled} janelas rotuladas · thr=${metrics.threshold}</span></h3>
           <table class="event-table">
             <thead><tr><th></th><th>P</th><th>R</th><th>F1</th><th>ROC-AUC</th><th>PR-AUC</th><th>TP/FP/FN/TN</th></tr></thead>
             <tbody>
@@ -652,7 +920,7 @@
         const s = telemetry.summary;
         const stages = Object.entries(s.by_stage || {});
         teleHtml = `<div class="section-card">
-          <h3>Telemetria LLM <span style="font-size:.72rem;color:var(--muted)">wall=${(s.wall_time_s||0).toFixed(1)}s · ${s.total_calls} chamadas</span></h3>
+          <h3>Telemetria LLM ${helpTip('Latência e consumo de tokens por estágio (SLM, Judge). wall=tempo total da run. Mean=duração média por chamada. Guardado em telemetry.json para audit.')}<span style="font-size:.72rem;color:var(--muted)">wall=${(s.wall_time_s||0).toFixed(1)}s · ${s.total_calls} chamadas</span></h3>
           <table class="event-table">
             <thead><tr><th>Stage</th><th>Calls</th><th>OK</th><th>Mean (s)</th><th>Total (s)</th><th>Prompt tok</th><th>Compl. tok</th></tr></thead>
             <tbody>${stages.map(([name, st]) => `
@@ -672,7 +940,7 @@
         const i = manifest.input || {};
         const c = manifest.config || {};
         provHtml = `<div class="section-card">
-          <h3>Provenance <span style="font-size:.72rem;color:var(--muted)">run_manifest.json</span></h3>
+          <h3>Provenance ${helpTip('Metadados de reprodutibilidade: SHA-256 do input, modelos, seed, threshold, git commit. Permite replicar exatamente esta run mais tarde.')}<span style="font-size:.72rem;color:var(--muted)">run_manifest.json</span></h3>
           <div class="ds2-prov-grid">
             <span class="ds2-prov-key">Input</span><span class="ds2-prov-val">${esc(i.path || '—')}</span>
             <span class="ds2-prov-key">SHA-256</span><span class="ds2-prov-val">${esc((i.sha256 || '').slice(0,16))}…</span>
@@ -692,16 +960,16 @@
       detailContent.style.display = '';
       detailContent.innerHTML = `
         <div class="section-card">
-          <h3>DualSentinel · sumário da execução</h3>
+          <h3>DualSentinel · sumário da execução ${helpTip('Visão geral da run. Abre o separador Resultados à esquerda para explorar cada janela suspeita em detalhe.')}</h3>
           <div class="ds2-stat-grid">
-            <div class="stat-box"><div class="stat-label">Janelas</div><div class="stat-value">${windows.length}</div></div>
-            <div class="stat-box"><div class="stat-label">Acima do threshold</div><div class="stat-value">${flagged}</div></div>
-            <div class="stat-box"><div class="stat-label">Judged</div><div class="stat-value">${judgeResults.length}</div></div>
-            <div class="stat-box"><div class="stat-label">Malicious</div><div class="stat-value" style="color:#fca5a5">${verdictCounts.malicious}</div></div>
-            <div class="stat-box"><div class="stat-label">Suspicious</div><div class="stat-value" style="color:#fde68a">${verdictCounts.suspicious}</div></div>
-            <div class="stat-box"><div class="stat-label">Normal</div><div class="stat-value" style="color:#86efac">${verdictCounts.normal}</div></div>
+            <div class="stat-box" title="Total de janelas temporais (60s cada) extraídas do log"><div class="stat-label">Janelas</div><div class="stat-value">${windows.length}</div></div>
+            <div class="stat-box" title="Janelas com detector_score ≥ 0.6 — as que foram enviadas aos LLMs"><div class="stat-label">Acima do threshold</div><div class="stat-value">${flagged}</div></div>
+            <div class="stat-box" title="Janelas efetivamente analisadas pelo LLM Judge (limitado por --max-llm-calls se definido)"><div class="stat-label">Judged</div><div class="stat-value">${judgeResults.length}</div></div>
+            <div class="stat-box" title="Veredicto do Judge: atividade claramente maliciosa (score alto + técnicas ATT&CK confirmadas)"><div class="stat-label">Malicious</div><div class="stat-value" style="color:#fca5a5">${verdictCounts.malicious}</div></div>
+            <div class="stat-box" title="Suspeita com confiança moderada — requer review do analista SOC"><div class="stat-label">Suspicious</div><div class="stat-value" style="color:#fde68a">${verdictCounts.suspicious}</div></div>
+            <div class="stat-box" title="Falso positivo do detetor — Judge considera benígno"><div class="stat-label">Normal</div><div class="stat-value" style="color:#86efac">${verdictCounts.normal}</div></div>
           </div>
-          <div style="margin-top:8px;font-size:.74rem;color:var(--muted)">${esc(data.output_dir || '')}</div>
+          <div style="margin-top:8px;font-size:.74rem;color:var(--muted)" title="Diretório no disco onde os artefactos desta run estão guardados">${esc(data.output_dir || '')}</div>
         </div>
         ${metricsHtml}${teleHtml}${provHtml}
         <div class="section-card" style="text-align:center;color:var(--muted);font-size:.84rem">
@@ -792,27 +1060,27 @@
         <div class="section-card">
           <h3>DualSentinel &nbsp;·&nbsp; Janela ${idx + 1}</h3>
           <div class="summary-grid">
-            <div class="stat-box"><div class="stat-label">Score</div><div class="stat-value">${esc(scoreDisplay)}</div></div>
-            <div class="stat-box"><div class="stat-label">Verdict</div><div class="stat-value" style="font-size:.88rem">${verdictHtml}</div></div>
-            <div class="stat-box"><div class="stat-label">FP Risk</div><div class="stat-value" style="font-size:.9rem">${fpHtml}</div></div>
+            <div class="stat-box" title="Judge: score 0-10 (10=máximo de confiança em atividade maliciosa). Sem Judge: score heurístico 0-1."><div class="stat-label">Score</div><div class="stat-value">${esc(scoreDisplay)}</div></div>
+            <div class="stat-box" title="Veredicto final: malicious (ameaça real), suspicious (requer review), normal (benígno), detector only (sem análise LLM)"><div class="stat-label">Verdict</div><div class="stat-value" style="font-size:.88rem">${verdictHtml}</div></div>
+            <div class="stat-box" title="Risco de falso positivo estimado pelo Judge: low = alta confiança; high = pode ser benígno apesar do score"><div class="stat-label">FP Risk</div><div class="stat-value" style="font-size:.9rem">${fpHtml}</div></div>
           </div>
-          <div style="margin-top:10px;font-size:.8rem;color:var(--muted)">${esc(windowRange)}</div>
+          <div style="margin-top:10px;font-size:.8rem;color:var(--muted)" title="Intervalo temporal de 60s da janela">${esc(windowRange)}</div>
           ${win ? `<div class="eid-row" style="margin-top:8px">
-            <span class="eid-chip">Events: ${parseInt(win.event_count || 0)}</span>
-            <span class="eid-chip">Detector: ${parseFloat(win.detector_score || 0).toFixed(3)}</span>
-            ${win.baseline_features ? `<span class="eid-chip">Emb dist: ${parseFloat(win.baseline_features.embedding_distance || 0).toFixed(3)}</span>` : ''}
+            <span class="eid-chip" title="Número de eventos Sysmon/ETW na janela">Events: ${parseInt(win.event_count || 0)}</span>
+            <span class="eid-chip" title="Score do detetor heurístico (regras ATT&CK + smart features + baseline)">Detector: ${parseFloat(win.detector_score || 0).toFixed(3)}</span>
+            ${win.baseline_features ? `<span class="eid-chip" title="Distância L2 ao embedding médio do baseline benígno. Maior = mais fora do normal.">Emb dist: ${parseFloat(win.baseline_features.embedding_distance || 0).toFixed(3)}</span>` : ''}
           </div>` : ''}
         </div>
-        <div class="section-card"><h3>ATT&amp;CK Techniques</h3>
+        <div class="section-card"><h3>ATT&amp;CK Techniques ${helpTip('Técnicas MITRE ATT&CK identificadas nesta janela. Vindas de três fontes: regras determinísticas (rule), retrieval da KB (kb) ou do Judge LLM (llm).')}</h3>
           <div style="display:flex;flex-wrap:wrap">${techHtml}</div></div>
         ${kbHtml ? `<div class="section-card">
-          <h3>RAG Candidates <span style="font-size:.7rem;color:var(--muted);font-weight:400">
+          <h3>RAG Candidates ${helpTip('Top-k técnicas mais parecidas recuperadas da KB MITRE via híbrido Chroma+BM25+RRF. Mostram o espaço de hipóteses que o Judge tinha — não só o que escolheu.')}<span style="font-size:.7rem;color:var(--muted);font-weight:400">
             (top-${kbCandidates.length} da KB ATT&amp;CK · destaque = escolhida pelo Judge)</span></h3>
           <div style="display:flex;flex-wrap:wrap">${kbHtml}</div></div>` : ''}
-        <div class="section-card"><h3>Análise LLM</h3>
+        <div class="section-card"><h3>Análise LLM ${helpTip('Veredicto final do LLM Judge (llama3.2). Valida ou refuta a hipótese do SLM, flagga alegações sem evidência, e propõe ação recomendada para o analista SOC.')}</h3>
           <div class="attr-result">${llmHtml}</div></div>
         <div class="section-card">
-          <h3>Eventos da Janela <span style="font-size:.72rem;color:var(--muted)">(${summaries.length} total)</span></h3>
+          <h3>Eventos da Janela ${helpTip('Sumários one-line de cada evento Sysmon/ETW agregado na janela. Já sanitizado contra prompt injection antes de ir ao LLM.')}<span style="font-size:.72rem;color:var(--muted)">(${summaries.length} total)</span></h3>
           ${eventsHtml}
         </div>`;
     }

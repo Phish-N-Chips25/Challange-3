@@ -29,7 +29,7 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Optional, TYPE_CHECKING
+from typing import Callable, Optional, TYPE_CHECKING
 
 import ollama
 from dotenv import load_dotenv
@@ -277,6 +277,7 @@ class LLMJudge:
         slm_analyses: Optional[list] = None,
         threshold: float = 0.6,
         max_windows: int = 50,
+        progress_cb: Optional[Callable[[int, int, dict], None]] = None,
     ) -> list[JudgeResult]:
         """
         Filtra janelas pelo detector_score e avalia as de maior risco.
@@ -335,6 +336,11 @@ class LLMJudge:
             r = self.judge(w, slm_analysis=slm)
             results.append(r)
             time.sleep(0.1)
+            if progress_cb is not None:
+                try:
+                    progress_cb(i, len(high_risk), w)
+                except Exception:  # noqa: BLE001
+                    pass
 
         if skipped_low_risk:
             logger.info(

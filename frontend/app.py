@@ -282,7 +282,7 @@ HTML = """
     .square {
       position: relative;
       width: 100%;
-      aspect-ratio: 1 / 1;
+      aspect-ratio: 16 / 9;   /* default; overridden by JS once the stream reports its native ratio */
       border-radius: 14px;
       overflow: hidden;
       border: 1px solid var(--line);
@@ -300,7 +300,7 @@ HTML = """
     video {
       width: 100%;
       height: 100%;
-      object-fit: cover;
+      object-fit: contain;  /* preserve the camera's real aspect ratio, no cropping */
       transform: scaleX(-1);
       filter: contrast(1.05) saturate(1.08);
     }
@@ -523,6 +523,12 @@ HTML = """
             <div class="alt-desc">{{ alternativas[0].descricao }}</div>
           </div>
           <button id="authBtn">Autenticar</button>
+          <button id="demoBtn" type="button" style="margin-top:8px;background:rgba(103,232,249,0.12);color:#67e8f9;border:1px dashed rgba(103,232,249,0.55);cursor:pointer;padding:10px 14px;border-radius:10px;font-weight:600" title="Entrar sem câmara — útil para apresentações remotas">▶ Modo Demo (sem câmara)</button>
+          <div id="demoPanel" style="display:none;margin-top:8px;background:rgba(15,23,42,0.6);border:1px solid rgba(148,163,184,0.25);border-radius:10px;padding:10px">
+            <div style="font-size:.8rem;color:#cbd5e1;margin-bottom:6px">Escolhe o utilizador a simular:</div>
+            <select id="demoUser" style="width:100%;padding:8px;border-radius:8px;background:#0f172a;color:#e2e8f0;border:1px solid rgba(148,163,184,0.35);margin-bottom:8px"></select>
+            <button id="demoGoBtn" type="button" style="width:100%;background:#67e8f9;color:#0f172a;border:0;padding:10px;border-radius:8px;font-weight:700;cursor:pointer">Entrar como este utilizador</button>
+          </div>
           <div class="progress-shell">
             <div class="progress-head">
               <strong>Progresso da verificação</strong>
@@ -662,6 +668,15 @@ HTML = """
           audio: false
         });
         video.srcObject = stream;
+        // Ajusta o container à razão real da câmara (evita letterbox/cropping)
+        video.addEventListener('loadedmetadata', () => {
+          if (video.videoWidth && video.videoHeight) {
+            const container = video.closest('.square');
+            if (container) {
+              container.style.aspectRatio = `${video.videoWidth} / ${video.videoHeight}`;
+            }
+          }
+        }, { once: true });
       } catch (err) {
         renderStatus({
           tone: 'bad',
@@ -868,6 +883,54 @@ HTML = """
     authBtn.addEventListener('click', authenticate);
     updateAlternativeCard();
     startCamera();
+
+    // ── Modo Demo (bypass da câmara para apresentações remotas) ──
+    const demoBtn    = document.getElementById('demoBtn');
+    const demoPanel  = document.getElementById('demoPanel');
+    const demoUser   = document.getElementById('demoUser');
+    const demoGoBtn  = document.getElementById('demoGoBtn');
+    async function loadDemoUsers() {
+      try {
+        const r = await fetch('/auth/simulate/users');
+        const j = await r.json();
+        const users = Array.isArray(j.users) ? j.users : [];
+        demoUser.innerHTML = users.length
+          ? users.map(u => `<option value="${u}">${u}</option>`).join('')
+          : '<option value="">— sem utilizadores —</option>';
+      } catch (_) {
+        demoUser.innerHTML = '<option value="">— erro a carregar —</option>';
+      }
+    }
+    demoBtn.addEventListener('click', () => {
+      const show = demoPanel.style.display === 'none';
+      demoPanel.style.display = show ? '' : 'none';
+      if (show && !demoUser.options.length) loadDemoUsers();
+    });
+    demoGoBtn.addEventListener('click', async () => {
+      const name = demoUser.value;
+      if (!name) return;
+      demoGoBtn.disabled = true;
+      demoGoBtn.textContent = 'A entrar...';
+      try {
+        const r = await fetch('/auth/simulate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name }),
+        });
+        const j = await r.json();
+        if (j.allowed && j.redirect_to) {
+          window.location.href = j.redirect_to;
+        } else {
+          demoGoBtn.disabled = false;
+          demoGoBtn.textContent = 'Entrar como este utilizador';
+          alert(j.error || 'Falha no modo demo');
+        }
+      } catch (err) {
+        demoGoBtn.disabled = false;
+        demoGoBtn.textContent = 'Entrar como este utilizador';
+        alert('Erro: ' + (err && err.message ? err.message : err));
+      }
+    });
   </script>
 </body>
 </html>
@@ -1073,6 +1136,41 @@ def auth():
     return jsonify(resultado)
 
 
+# ── Demo / simulação de login (sem câmara) ──
+# Útil para apresentações remotas ou ambientes sem webcam. Aceita apenas
+# nomes que existam em frontend/pessoas_permitidas/ para manter paridade com
+# o fluxo real (o dashboard recebe o mesmo tipo de session["auth_name"]).
+def _listar_pessoas_permitidas() -> list[str]:
+    base = Path(__file__).parent / "pessoas_permitidas"
+    if not base.exists():
+        return []
+    return sorted([p.name for p in base.iterdir() if p.is_dir() and not p.name.startswith(".")])
+
+
+@app.get("/auth/simulate/users")
+def auth_simulate_users():
+    return jsonify({"users": _listar_pessoas_permitidas()})
+
+
+@app.post("/auth/simulate")
+def auth_simulate():
+    body = request.get_json(silent=True) or {}
+    name = (body.get("name") or "").strip()
+    if not name:
+        return jsonify({"allowed": False, "error": "nome ausente"}), 400
+    permitidos = _listar_pessoas_permitidas()
+    if name not in permitidos:
+        return jsonify({"allowed": False, "error": f"utilizador '{name}' não está na lista de permitidos"}), 403
+    session["auth_name"] = name
+    session["auth_demo"] = True  # marca a sessão como simulada (não passou pela câmara)
+    return jsonify({
+        "allowed": True,
+        "matched_name": name,
+        "demo": True,
+        "redirect_to": url_for("dashboard"),
+    })
+
+
 @app.get("/welcome")
 def welcome():
     nome = session.get("auth_name")
@@ -1190,16 +1288,34 @@ def _ds2_run_bg(
     use_kb: bool = True,
     evaluate: bool = False,
     seed: int = 42,
+    slm_model: str | None = None,
+    judge_model: str | None = None,
 ) -> None:
     """Background thread: run DualSentinel pipeline and store result in _ds2_runs."""
     with _ds2_lock:
-        _ds2_runs[run_id]["status"]  = "running"
-        _ds2_runs[run_id]["message"] = "A iniciar pipeline..."
+        _ds2_runs[run_id]["status"]   = "running"
+        _ds2_runs[run_id]["message"]  = "A iniciar pipeline..."
+        _ds2_runs[run_id]["stage"]    = "init"
+        _ds2_runs[run_id]["progress"] = 0.0
     try:
         from pipeline import run_pipeline  # imported here to avoid module-level side effects
         output_dir = Path(__file__).resolve().parent.parent / "DualSentinel" / "results"
-        with _ds2_lock:
-            _ds2_runs[run_id]["message"] = "A processar eventos e a calcular anomalias..."
+
+        # Progress callback bridges pipeline's per-stage updates into _ds2_runs,
+        # so the /api/dualsentinel/status endpoint can stream them to the UI.
+        def _on_progress(ev: dict) -> None:
+            with _ds2_lock:
+                run = _ds2_runs.get(run_id)
+                if run is None:
+                    return
+                run["message"]  = ev.get("message", run.get("message", ""))
+                run["stage"]    = ev.get("stage", run.get("stage", ""))
+                run["progress"] = ev.get("progress", run.get("progress", 0.0))
+                # pass through any extra fields (flagged, targets, sub_i, sub_n…)
+                for k, v in ev.items():
+                    if k not in {"message", "stage", "progress"}:
+                        run[k] = v
+
         result = run_pipeline(
             input_path=file_path,
             dataset=dataset,
@@ -1211,16 +1327,22 @@ def _ds2_run_bg(
             use_kb=use_kb,
             evaluate=evaluate,
             seed=seed,
+            progress_cb=_on_progress,
+            slm_model=slm_model,
+            judge_model=judge_model,
         )
         with _ds2_lock:
-            _ds2_runs[run_id]["status"]  = "done"
-            _ds2_runs[run_id]["message"] = "Pipeline concluído."
-            _ds2_runs[run_id]["result"]  = result
+            _ds2_runs[run_id]["status"]   = "done"
+            _ds2_runs[run_id]["message"]  = "Pipeline concluído."
+            _ds2_runs[run_id]["stage"]    = "done"
+            _ds2_runs[run_id]["progress"] = 1.0
+            _ds2_runs[run_id]["result"]   = result
     except Exception as exc:
         traceback.print_exc()
         with _ds2_lock:
             _ds2_runs[run_id]["status"]  = "error"
             _ds2_runs[run_id]["message"] = str(exc)
+            _ds2_runs[run_id]["stage"]   = "error"
             _ds2_runs[run_id]["error"]   = str(exc)
 
 
@@ -1256,6 +1378,9 @@ def api_ds2_run():
     use_kb     = bool(body.get("use_kb", True))
     evaluate   = bool(body.get("evaluate", False))
     seed       = int(body.get("seed") or 42)
+    # Optional per-run model overrides (UI dropdowns). None → fall back to .env.
+    slm_model   = (body.get("slm_model")   or "").strip() or None
+    judge_model = (body.get("judge_model") or "").strip() or None
 
     if not rel_file:
         return jsonify({"error": "file is required"}), 400
@@ -1273,12 +1398,16 @@ def api_ds2_run():
 
     run_id = str(uuid.uuid4())
     with _ds2_lock:
-        _ds2_runs[run_id] = {"status": "queued", "message": "Na fila de espera...", "result": None, "error": None}
+        _ds2_runs[run_id] = {
+            "status": "queued", "message": "Na fila de espera...",
+            "stage": "queued", "progress": 0.0,
+            "result": None, "error": None,
+        }
 
     t = threading.Thread(
         target=_ds2_run_bg,
         args=(run_id, file_path, dataset, threshold, skip_judge, max_rows,
-              max_llm_calls, use_kb, evaluate, seed),
+              max_llm_calls, use_kb, evaluate, seed, slm_model, judge_model),
         daemon=True,
         name=f"ds2-{run_id[:8]}",
     )
@@ -1292,7 +1421,10 @@ def api_ds2_status(run_id: str):
         run = _ds2_runs.get(run_id)
     if run is None:
         return jsonify({"error": "Run not found"}), 404
-    return jsonify({"status": run["status"], "message": run["message"]})
+    # Echo all non-heavy fields so the UI can display rich progress
+    # (stage, percentage, sub-window counters, model in use, …).
+    payload = {k: v for k, v in run.items() if k not in {"result"}}
+    return jsonify(payload)
 
 
 @app.get("/api/dualsentinel/results/<run_id>")
@@ -1394,7 +1526,7 @@ def _ds2_run_summary(run_dir: Path) -> dict | None:
 def api_ds2_health():
     """DualSentinel-specific health: Ollama up, models pulled, KB ready, last run."""
     slm_model   = os.getenv("SLM_MODEL",   "phi3:medium")
-    judge_model = os.getenv("JUDGE_MODEL", "llama3.1")
+    judge_model = os.getenv("JUDGE_MODEL", "llama3.2")
 
     ollama_up = False
     installed: list = []
@@ -1442,6 +1574,7 @@ def api_ds2_health():
         "slm_available":   ollama_up and _has(slm_model),
         "judge_model":     judge_model,
         "judge_available": ollama_up and _has(judge_model),
+        "installed_models": installed,  # list of Ollama models for the UI dropdowns
         "kb_ready":        kb_ready,
         "kb_techniques":   kb_count,
         "last_run":        last_run,

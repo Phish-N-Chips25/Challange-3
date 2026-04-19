@@ -24,7 +24,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional
 
 import ollama
 from dotenv import load_dotenv
@@ -234,6 +234,7 @@ class SLMAnalyst:
         windows: list[dict],
         threshold: float = 0.6,
         max_calls: Optional[int] = None,
+        progress_cb: Optional[Callable[[int, int, dict], None]] = None,
     ) -> list[SLMAnalysis]:
         """
         Análise em batch: filtra janelas por detector_score e analisa
@@ -241,6 +242,8 @@ class SLMAnalyst:
 
         max_calls: se fornecido, limita o número de chamadas reais ao Ollama
         (janelas trivially-benign continuam a ser pré-filtradas sem custo).
+        progress_cb: callback opcional invocado como progress_cb(i, n, window)
+        depois de cada janela processada — útil para feedback de UI.
         """
         high_risk = [w for w in windows if w.get("detector_score", 0.0) >= threshold]
         high_risk.sort(key=lambda w: w.get("detector_score", 0.0), reverse=True)
@@ -269,6 +272,11 @@ class SLMAnalyst:
                     f"{w.get('window_start', '')[:19]} → {r.risk_level}"
                 )
                 time.sleep(0.05)  # Yield only after real Ollama calls
+            if progress_cb is not None:
+                try:
+                    progress_cb(i, len(high_risk), w)
+                except Exception:  # noqa: BLE001
+                    pass
 
         pre_filtered = len(results) - ollama_calls
         logger.info(

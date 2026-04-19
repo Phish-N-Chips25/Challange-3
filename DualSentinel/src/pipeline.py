@@ -16,7 +16,7 @@ import logging
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import numpy as np
 import pandas as pd
@@ -153,12 +153,31 @@ def run_pipeline(
     use_kb: bool = True,
     max_llm_calls: Optional[int] = None,
     seed: int = 42,
+    progress_cb: Optional[Callable[[dict], None]] = None,
+    slm_model: Optional[str] = None,
+    judge_model: Optional[str] = None,
 ) -> dict:
     """
     Pipeline completo. Devolve dict com resultados e caminhos de output.
 
     threshold: sobrepõe ANOMALY_THRESHOLD do .env quando fornecido.
+    progress_cb: callback opcional que recebe dicts com chaves
+      {stage, message, progress (0-1), detail?} — usado pelo frontend para
+      mostrar feedback detalhado durante execução em background thread.
     """
+    def _emit(stage: str, message: str, progress: float, **extra) -> None:
+        if progress_cb is None:
+            return
+        try:
+            progress_cb({
+                "stage":    stage,
+                "message":  message,
+                "progress": max(0.0, min(1.0, float(progress))),
+                **extra,
+            })
+        except Exception:  # noqa: BLE001  — never let UI callbacks break the pipeline
+            pass
+
     set_global_seed(seed)
     effective_threshold = threshold if threshold is not None else ANOMALY_THRESHOLD
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M")
@@ -182,6 +201,7 @@ def run_pipeline(
         return {}
 
     # ── 2. Windowing + chains ─────────────────
+    _emit("windowing", f"Janelamento {WINDOW_SIZE}s + extração de cadeias de processos…", 0.15)
     console.print(f"[bold]Step 2:[/bold] Windowing ({WINDOW_SIZE}s) + chain extraction...")
     windows: list[WindowFeatures] = list(
         make_windows(df, window_size_seconds=WINDOW_SIZE, max_events=MAX_EVENTS)
@@ -198,6 +218,7 @@ def run_pipeline(
 
     # ── 3. ATT&CK rule tagging + KB retrieval + heuristic score ──
     kb_label = "+ KB retrieval" if use_kb else ""
+    _emit("detect", f"Regras ATT&CK {kb_label} + scoring heurístico ({len(windows)} janelas)…", 0.28)
     console.print(f"[bold]Step 3:[/bold] ATT&CK rule tagging {kb_label} + heuristic scoring...")
     window_dicts = []
     for i, w in enumerate(windows):
@@ -225,6 +246,8 @@ def run_pipeline(
         json.dump([c.to_dict() for c in chains], f, indent=2, default=str)
 
     high_risk_count = sum(1 for w in window_dicts if w["detector_score"] >= effective_threshold)
+    _emit("detect", f"{high_risk_count}/{len(window_dicts)} janelas acima do threshold {effective_threshold}", 0.42,
+          flagged=high_risk_count, total_windows=len(window_dicts))
     console.print(f"  → {high_risk_count}/{len(window_dicts)} janelas acima do threshold ({effective_threshold})")
 
     # Persist rendered evidence packs for high-risk windows (debug aid).
@@ -248,15 +271,24 @@ def run_pipeline(
         # ── 4a. SLM pre-diagnosis (Phi-3 Medium) ──
         slm_analyses = []
         try:
+            effective_slm = slm_model or os.getenv('SLM_MODEL', 'phi3:mini')
+            _emit("slm", f"SLM ({effective_slm}) — pré-diagnóstico de {high_risk_count} janelas…", 0.50,
+                  model=effective_slm, targets=high_risk_count)
             console.print(
                 f"[bold]Step 4a:[/bold] SLM pre-diagnosis "
-                f"({os.getenv('SLM_MODEL', 'phi3:mini')})..."
+                f"({effective_slm})..."
             )
-            analyst = SLMAnalyst()
+            analyst = SLMAnalyst(model=effective_slm)
+
+            def _slm_progress(i: int, n: int, win: dict) -> None:
+                frac = 0.50 + 0.15 * (i / max(1, n))
+                _emit("slm", f"SLM: janela {i}/{n}", frac, sub_i=i, sub_n=n)
+
             slm_analyses = analyst.analyse_batch(
                 window_dicts,
                 threshold=effective_threshold,
                 max_calls=max_llm_calls,
+                progress_cb=_slm_progress,
             )
             console.print(f"  → {len(slm_analyses)} janelas pré-diagnosticadas pelo SLM")
 
@@ -268,16 +300,24 @@ def run_pipeline(
 
         # ── 4b. LLM Judge final validation (Llama 3.1) ──
         try:
+            effective_judge = judge_model or os.getenv('JUDGE_MODEL', 'llama3.2')
+            _emit("judge", f"Judge ({effective_judge}) — validação final…", 0.66, model=effective_judge)
             console.print(
                 f"[bold]Step 4b:[/bold] LLM judge validation "
-                f"({os.getenv('JUDGE_MODEL', 'llama3.2')})..."
+                f"({effective_judge})..."
             )
-            judge = LLMJudge()
+            judge = LLMJudge(model=effective_judge)
+
+            def _judge_progress(i: int, n: int, win: dict) -> None:
+                frac = 0.66 + 0.24 * (i / max(1, n))
+                _emit("judge", f"Judge: janela {i}/{n}", frac, sub_i=i, sub_n=n)
+
             judge_results = judge.judge_batch(
                 window_dicts,
                 slm_analyses=slm_analyses if slm_analyses else None,
                 threshold=effective_threshold,
                 max_windows=max_llm_calls if max_llm_calls is not None else 50,
+                progress_cb=_judge_progress,
             )
 
             judge_path = output_dir / "judge_results.json"
@@ -290,11 +330,13 @@ def run_pipeline(
         console.print("[dim]Step 4: SLM + LLM judge skipped (--skip-judge)[/dim]")
 
     # ── 5. Relatório ──────────────────────────
+    _emit("report", "A gerar relatório Markdown…", 0.92)
     console.print("[bold]Step 5:[/bold] Generating report...")
     report_path = generate_report(window_dicts, judge_results, output_dir, dataset)
 
     # ── 6. Métricas (se --evaluate) ───────────
     if evaluate and "label" in df.columns:
+        _emit("metrics", "A calcular métricas (Precision, Recall, F1, AUC)…", 0.97)
         console.print("[bold]Step 6:[/bold] Computing metrics...")
         from evaluate import evaluate_run
         evaluate_run(
