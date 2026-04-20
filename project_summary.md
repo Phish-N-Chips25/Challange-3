@@ -101,17 +101,27 @@ O contexto recuperado é enviado ao **Qwen 2.5 32B via Ollama** com um prompt ch
 
 **RAG recall: 60% em OTRF Atomic Red Team**
 
-#### DualSentinel — Abordagem Alternativa Leve
+#### DualSentinel — Abordagem Alternativa Leve (Auditável)
 
-Uma segunda abordagem foi desenvolvida em paralelo para contextos com menos recursos computacionais:
+Uma segunda abordagem foi desenvolvida em paralelo para contextos com menos recursos computacionais e com requisitos fortes de auditabilidade:
 
 ```
-IsolationForest + GRU Autoencoder → SLM Analyst (Phi-3) → LLM Judge (Llama 3.1)
+Heuristic Scorer (ATT&CK rules + smart features + baseline + KB hybrid)
+        → SLM Analyst (Phi-3 Medium)
+        → LLM Judge (Llama 3.2)
 ```
 
-O padrão **SLM→LLM** é uma forma de chain-of-thought guiado: o Phi-3 produz uma hipótese rápida; o Llama 3.1 valida-a ou refuta-a com referências explícitas aos eventos. Isto reduz alucinações porque o judge tem uma âncora — não parte de uma folha em branco.
+A arquitetura clássica baseada em IsolationForest + GRU foi **substituída por um heuristic scorer** em que cada termo é inspecionável (regras ATT&CK confirmadas, 7 smart-feature flags, desvio à baseline self-supervised, hits da KB hybrid Chroma+BM25 com RRF). Testes empíricos no LMD-2023 e Splunk Attack Data mostraram que os modelos opacos não traziam ganho mensurável e impediam o LLM Judge de auditar a evidência.
+
+O padrão **SLM→LLM** é uma forma de chain-of-thought guiado: o Phi-3 Medium produz uma hipótese rápida; o Llama 3.2 valida-a ou refuta-a com referências explícitas aos eventos. Isto reduz alucinações porque o judge tem uma âncora — não parte de uma folha em branco.
 
 **Todos os LLMs correm localmente via Ollama** — dados sensíveis não saem da máquina.
+
+**Defesa académica do DualSentinel:** 4 notebooks consolidados em [DualSentinel/notebooks/](DualSentinel/notebooks/):
+- [defesa_lmd_full_report.ipynb](DualSentinel/notebooks/defesa_lmd_full_report.ipynb) — corrida full-stack do pipeline em LMD-2023 com export HTML (17 secções)
+- [threshold_calibration.ipynb](DualSentinel/notebooks/threshold_calibration.ipynb) — calibração empírica do threshold de decisão (sweep F1/Youden/FPR, ROC, PR) sobre as corridas EoRS/EoHT do LMD-2023
+- [kb_ablation.ipynb](DualSentinel/notebooks/kb_ablation.ipynb) — ablação on/off da KB hybrid retrieval
+- [eda.ipynb](DualSentinel/notebooks/eda.ipynb) — exploração dos datasets de input
 
 ---
 
@@ -197,10 +207,11 @@ A solução final não nasceu do nada. O repositório documenta toda a evoluçã
 **Deteção de Anomalias**
 - PyTorch (TransformerAE + Single-event AE), Word2Vec (gensim), scikit-learn
 - Optuna (NAS + HPO), MLflow (experiment tracking)
+- DualSentinel: heuristic scorer auditável (ATT&CK rules + smart features + self-supervised baseline)
 
 **ATT&CK Attribution**
 - ChromaDB (vector store), sentence-transformers (all-mpnet-base-v2), rank-bm25
-- Ollama (Qwen 2.5 32B / phi4 / Llama 3.1), Sigma rules, MITRE STIX
+- Ollama (Qwen 2.5 32B / phi4 / Llama 3.2 / Phi-3 Medium), Sigma rules, MITRE STIX
 
 **Interface**
 - Flask, HTML/CSS/JS (dashboard SOC), Streamlit (demo standalone)
@@ -222,4 +233,4 @@ A solução final não nasceu do nada. O repositório documenta toda a evoluçã
 
 5. **Privacidade by design** — Tudo corre localmente. Numa organização real, logs de sistema são dados sensíveis. Ollama local resolve este problema por design.
 
-6. **Escalabilidade** — O DualSentinel mostra que o mesmo conceito funciona com modelos mais pequenos (Phi-3 + Llama 3.1), tornando a solução viável mesmo sem GPUs de topo.
+6. **Escalabilidade** — O DualSentinel mostra que o mesmo conceito funciona com modelos mais pequenos (Phi-3 Medium + Llama 3.2) sobre um heuristic scorer auditável, tornando a solução viável mesmo sem GPUs de topo e com cada decisão justificável perante um analista.

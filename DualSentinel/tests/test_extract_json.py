@@ -1,6 +1,6 @@
 """Regression tests for the tolerant LLM-JSON extractor.
 
-Each case mirrors a real failure mode observed on phi3:medium / llama3.1
+Each case mirrors a real failure mode observed on phi3:medium / llama3.2:latest
 local runs (see slm_analyst error logs).
 """
 

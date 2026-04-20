@@ -152,7 +152,7 @@ The pre-diagnosis becomes a **hypothesis** that the Judge then validates or refu
 
 ### `llm_judge.py` — LLM Final Validation
 
-**Model:** `llama3.1` (configurable via `JUDGE_MODEL` in `.env`) via Ollama.
+**Model:** `llama3.2:latest` (configurable via `JUDGE_MODEL` in `.env`) via Ollama.
 
 1. Receives the same evidence pack plus the `SLMAnalysis` hypothesis.
 2. Uses `format="json"`; robust extraction via `_extract_json()` (direct parse → strip markdown fences → scan for first `{...}` block).
@@ -251,7 +251,7 @@ python src/preprocessor.py --input data/samples/sample_lmd.csv --output results/
 | Variable | Default | Description |
 |---|---|---|
 | `SLM_MODEL` | `phi3:medium` | Ollama model for SLM Analyst |
-| `JUDGE_MODEL` | `llama3.1` | Ollama model for LLM Judge |
+| `JUDGE_MODEL` | `llama3.2:latest` | Ollama model for LLM Judge |
 | `ANOMALY_THRESHOLD` | `0.6` | Minimum detector_score to escalate to LLMs |
 | `WINDOW_SIZE_SECONDS` | `60` | Time window size in seconds |
 | `MAX_EVENTS_PER_WINDOW` | `200` | Event cap per window |

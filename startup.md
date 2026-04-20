@@ -148,8 +148,8 @@ ollama serve
 
 # Descarregar modelos necessários:
 ollama pull phi3:medium    # SLM Analyst (~8 GB)
-ollama pull llama3.1       # LLM Judge   (~5 GB, versão 8B)
-# ollama pull llama3.1:70b # versão maior se tiveres VRAM suficiente
+ollama pull llama3.2:latest       # LLM Judge   (~2 GB, versão 3B)
+# ollama pull llama3.2:latest # versão maior se tiveres VRAM suficiente
 ```
 
 ### 3.3 Configurar variáveis de ambiente

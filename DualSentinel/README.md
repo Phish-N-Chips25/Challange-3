@@ -46,7 +46,7 @@ pip install -r requirements.txt
 # https://ollama.com/download
 ollama pull phi3:medium          # SLM Analyst (~8 GB)
 ollama pull llama3.2             # LLM Judge   (~2 GB, versão 3B)
-# ollama pull llama3.1:70b       # versão maior se tiveres VRAM suficiente
+# ollama pull llama3.2:latest       # versão maior se tiveres VRAM suficiente
 
 cp .env.example .env
 # Editar .env conforme necessário (ver secção Configuração abaixo)
@@ -113,7 +113,7 @@ notebooks/          EDA e análise de resultados
 ```
 # Modelos Ollama
 SLM_MODEL=phi3:medium        # SLM Analyst (pré-diagnóstico)
-JUDGE_MODEL=llama3.2         # LLM Judge (validação final); usar llama3.1:70b para mais precisão
+JUDGE_MODEL=llama3.2:latest         # LLM Judge (validação final); usar llama3.2:latest para mais precisão
 
 # Thresholds do pipeline
 ANOMALY_THRESHOLD=0.6        # detector score acima do qual a janela vai ao SLM+Judge

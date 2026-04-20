@@ -525,9 +525,18 @@ HTML = """
           <button id="authBtn">Autenticar</button>
           <button id="demoBtn" type="button" style="margin-top:8px;background:rgba(103,232,249,0.12);color:#67e8f9;border:1px dashed rgba(103,232,249,0.55);cursor:pointer;padding:10px 14px;border-radius:10px;font-weight:600" title="Entrar sem câmara — útil para apresentações remotas">▶ Modo Demo (sem câmara)</button>
           <div id="demoPanel" style="display:none;margin-top:8px;background:rgba(15,23,42,0.6);border:1px solid rgba(148,163,184,0.25);border-radius:10px;padding:10px">
-            <div style="font-size:.8rem;color:#cbd5e1;margin-bottom:6px">Escolhe o utilizador a simular:</div>
-            <select id="demoUser" style="width:100%;padding:8px;border-radius:8px;background:#0f172a;color:#e2e8f0;border:1px solid rgba(148,163,184,0.35);margin-bottom:8px"></select>
-            <button id="demoGoBtn" type="button" style="width:100%;background:#67e8f9;color:#0f172a;border:0;padding:10px;border-radius:8px;font-weight:700;cursor:pointer">Entrar como este utilizador</button>
+            <div style="font-size:.78rem;color:#94a3b8;margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em">Opção A — Validar imagem real</div>
+            <div style="font-size:.78rem;color:#cbd5e1;margin-bottom:6px">Carrega uma foto e ela passa pelo mesmo pipeline de reconhecimento facial:</div>
+            <input type="file" id="demoImage" accept="image/*" style="width:100%;padding:6px;border-radius:8px;background:#0f172a;color:#e2e8f0;border:1px solid rgba(148,163,184,0.35);margin-bottom:6px;font-size:.8rem">
+            <button id="demoImageGoBtn" type="button" style="width:100%;background:#67e8f9;color:#0f172a;border:0;padding:9px;border-radius:8px;font-weight:700;cursor:pointer;margin-bottom:12px">Validar imagem</button>
+            <div id="demoImageStatus" style="font-size:.78rem;color:#94a3b8;margin-bottom:12px;min-height:1em"></div>
+
+            <div style="border-top:1px dashed rgba(148,163,184,0.25);padding-top:10px">
+              <div style="font-size:.78rem;color:#94a3b8;margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em">Opção B — Bypass rápido</div>
+              <div style="font-size:.78rem;color:#cbd5e1;margin-bottom:6px">Escolhe um utilizador permitido (sem validação):</div>
+              <select id="demoUser" style="width:100%;padding:8px;border-radius:8px;background:#0f172a;color:#e2e8f0;border:1px solid rgba(148,163,184,0.35);margin-bottom:8px"></select>
+              <button id="demoGoBtn" type="button" style="width:100%;background:rgba(103,232,249,0.18);color:#67e8f9;border:1px solid rgba(103,232,249,0.45);padding:9px;border-radius:8px;font-weight:600;cursor:pointer">Entrar como este utilizador</button>
+            </div>
           </div>
           <div class="progress-shell">
             <div class="progress-head">
@@ -929,6 +938,49 @@ HTML = """
         demoGoBtn.disabled = false;
         demoGoBtn.textContent = 'Entrar como este utilizador';
         alert('Erro: ' + (err && err.message ? err.message : err));
+      }
+    });
+
+    // Opção A — valida uma imagem real escolhida pelo utilizador.
+    // Reaproveita /auth (mesmo endpoint da câmara) enviando a imagem como
+    // o campo "frame" — garante paridade exacta com o fluxo normal.
+    const demoImage        = document.getElementById('demoImage');
+    const demoImageGoBtn   = document.getElementById('demoImageGoBtn');
+    const demoImageStatus  = document.getElementById('demoImageStatus');
+    demoImageGoBtn.addEventListener('click', async () => {
+      const file = demoImage.files && demoImage.files[0];
+      if (!file) {
+        demoImageStatus.textContent = 'Escolhe uma imagem primeiro.';
+        demoImageStatus.style.color = '#fca5a5';
+        return;
+      }
+      demoImageGoBtn.disabled = true;
+      demoImageGoBtn.textContent = 'A validar...';
+      demoImageStatus.textContent = 'A correr reconhecimento facial...';
+      demoImageStatus.style.color = '#94a3b8';
+      try {
+        const formData = new FormData();
+        formData.append('frame', file, file.name || 'demo.jpg');
+        if (alternativaSelect) formData.append('alternativa', alternativaSelect.value);
+        const r = await fetch('/auth', { method: 'POST', body: formData });
+        const j = await r.json();
+        if (j.allowed && j.redirect_to) {
+          demoImageStatus.style.color = '#86efac';
+          demoImageStatus.textContent = `✓ ${j.matched_name} (score ${typeof j.score === 'number' ? j.score.toFixed(3) : '?'})`;
+          setTimeout(() => { window.location.href = j.redirect_to; }, 600);
+        } else {
+          demoImageStatus.style.color = '#fca5a5';
+          const reason = j.error || j.reason || 'Imagem não reconhecida';
+          const score  = typeof j.score === 'number' ? ` (score ${j.score.toFixed(3)})` : '';
+          demoImageStatus.textContent = `✗ ${reason}${score}`;
+          demoImageGoBtn.disabled = false;
+          demoImageGoBtn.textContent = 'Validar imagem';
+        }
+      } catch (err) {
+        demoImageStatus.style.color = '#fca5a5';
+        demoImageStatus.textContent = 'Erro: ' + (err && err.message ? err.message : err);
+        demoImageGoBtn.disabled = false;
+        demoImageGoBtn.textContent = 'Validar imagem';
       }
     });
   </script>

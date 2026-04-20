@@ -279,7 +279,7 @@ Such windows are emitted as `risk_level=low / pre_score=0` with no LLM call. On 
 
 ## Step 4b — LLM Judge (`llm_judge.py`)
 
-**Model**: `llama3.1` (configurable). Same `format="json"` and robust extraction (`_extract_json`) as the SLM.
+**Model**: `llama3.2:latest` (configurable). Same `format="json"` and robust extraction (`_extract_json`) as the SLM.
 
 **Prompt structure**:
 
@@ -609,7 +609,7 @@ The Judge prompt is explicitly adversarial: it tells the model to call out unsup
 
 | Option | Trade-off |
 |--------|-----------|
-| **`llama3.1:70b` or `mixtral:8x7b`** | Significantly better reasoning and fewer hallucinations; requires 48+ GB VRAM or a multi-GPU setup. |
+| **`llama3.2:latest` or `mixtral:8x7b`** | Significantly better reasoning and fewer hallucinations; requires 48+ GB VRAM or a multi-GPU setup. |
 | **Structured output with JSON schema enforcement** | Ollama supports `format=json` but does not validate against a schema. Using `outlines` or `guidance` would guarantee the response matches the expected schema and eliminate `_extract_json` entirely. |
 | **Self-consistency sampling** | Run the Judge 3 times per window with `temperature=0.5` and take the majority verdict; reduces variance at 3× the cost. |
 | **RAG (Retrieval-Augmented Generation)** | Embed ATT&CK technique descriptions and retrieve the relevant ones before prompting, giving the Judge precise technique definitions without baking them into the system prompt. |
