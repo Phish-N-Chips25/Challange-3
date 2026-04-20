@@ -38,7 +38,7 @@ from provenance import set_global_seed, write_run_manifest, TELEMETRY
 console = Console()
 logger = logging.getLogger(__name__)
 
-ANOMALY_THRESHOLD = float(os.getenv("ANOMALY_THRESHOLD", 0.6))
+ANOMALY_THRESHOLD = float(os.getenv("ANOMALY_THRESHOLD", 0.85))
 WINDOW_SIZE = int(os.getenv("WINDOW_SIZE_SECONDS", 60))
 MAX_EVENTS = int(os.getenv("MAX_EVENTS_PER_WINDOW", 200))
 
@@ -413,7 +413,7 @@ def main(
     output_dir: Optional[Path] = typer.Option(None, help="Directório de output"),
     model_dir: Optional[Path] = typer.Option(None, help="Directório com modelos pré-treinados"),
     skip_judge: bool = typer.Option(False, help="Salta o LLM judge (economiza tokens)"),
-    threshold: Optional[float] = typer.Option(None, help="Sobrepõe ANOMALY_THRESHOLD do .env (default 0.6)"),
+    threshold: Optional[float] = typer.Option(None, help="Sobrepõe ANOMALY_THRESHOLD do .env (default 0.85)"),
     evaluate: bool = typer.Option(False, help="Calcula métricas (requer labels)"),
     use_kb: bool = typer.Option(True, "--use-kb/--no-use-kb", help="Augmenta o tagger com retrieval do ATT&CK KB (Chroma)"),
     max_llm_calls: Optional[int] = typer.Option(None, "--max-llm-calls", help="Limita chamadas ao Ollama em cada estágio LLM (SLM e Judge). \u00datil para smoke tests."),

@@ -275,7 +275,7 @@ class LLMJudge:
         self,
         windows: list[dict],
         slm_analyses: Optional[list] = None,
-        threshold: float = 0.6,
+        threshold: float = 0.85,
         max_windows: int = 50,
         progress_cb: Optional[Callable[[int, int, dict], None]] = None,
     ) -> list[JudgeResult]:
@@ -364,7 +364,7 @@ if __name__ == "__main__":
     def main(
         input: Path = typer.Option(..., help="JSON com janelas scored (output do pipeline)"),
         output: Path = typer.Option(Path("results/judge_results.json")),
-        threshold: float = typer.Option(0.6),
+        threshold: float = typer.Option(0.85),
         max_windows: int = typer.Option(50),
         model: str = typer.Option(JUDGE_MODEL),
     ):

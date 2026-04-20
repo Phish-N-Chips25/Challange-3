@@ -128,7 +128,7 @@ def _multilabel_pr_f1(
 def evaluate_run(
     windows: list[dict],
     judge_results: Optional[list[dict]] = None,
-    threshold: float = 0.6,
+    threshold: float = 0.85,
     output_path: Optional[Path] = None,
 ) -> dict:
     """Compute metrics; optionally persist as `metrics.json`."""

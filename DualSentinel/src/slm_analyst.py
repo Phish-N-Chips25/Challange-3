@@ -232,7 +232,7 @@ class SLMAnalyst:
     def analyse_batch(
         self,
         windows: list[dict],
-        threshold: float = 0.6,
+        threshold: float = 0.85,
         max_calls: Optional[int] = None,
         progress_cb: Optional[Callable[[int, int, dict], None]] = None,
     ) -> list[SLMAnalysis]:
@@ -301,7 +301,7 @@ if __name__ == "__main__":
     def main(
         input: Path = typer.Option(..., help="JSON com janelas scored (output do pipeline)"),
         output: Path = typer.Option(Path("results/slm_analysis.json")),
-        threshold: float = typer.Option(0.6),
+        threshold: float = typer.Option(0.85),
         model: str = typer.Option(SLM_MODEL),
     ):
         logging.basicConfig(level=logging.INFO)
