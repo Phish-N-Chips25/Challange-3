@@ -27,6 +27,7 @@ except ModuleNotFoundError:
 _DETECTION_ROOT = Path(__file__).resolve().parent.parent / "cyber-anomaly-detection"
 sys.path.insert(0, str(_DETECTION_ROOT))
 import detection_service as _ds
+from config import OLLAMA_BASE_URL, OLLAMA_MODEL, OLLAMA_TIMEOUT
 
 app = Flask(__name__)
 app.secret_key = "neongate-dev-secret-key-change-me"
