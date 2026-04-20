@@ -2,7 +2,6 @@
 Download large feature matrices from Hugging Face Hub.
 Run once after cloning: python setup_data.py
 Requires: huggingface_hub (pip install huggingface_hub)
-          HF login: python -c "from huggingface_hub import login; login()"
 """
 from pathlib import Path
 from huggingface_hub import hf_hub_download
@@ -24,6 +23,7 @@ for filename in FILES:
         filename=filename,
         repo_type="dataset",
         local_dir=str(DEST),
+        token=False,
     )
     print(f"  Saved to {dest}")
 
