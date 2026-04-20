@@ -4,6 +4,11 @@
 *.h5
 *.pkl
 
+# App inference models (committed directly — no LFS)
+!cyber-anomaly-detection/notebooks/checkpoints/models/autoencoder/word2vec/best.pt
+!cyber-anomaly-detection/notebooks/checkpoints/models/seq/seq_ae_word2vec.pt
+!cyber-anomaly-detection/notebooks/checkpoints/models/seq/seq_hpo_best_init.pt
+
 # Python
 __pycache__/
 *.pyc
