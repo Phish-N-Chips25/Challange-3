@@ -21,6 +21,7 @@ build/
 *.joblib
 # Pickled data
 *.pkl
+!notebooks/checkpoints/seq/seq_chains_m.pkl
 # PyTorch checkpoints
 *.pt
 !notebooks/checkpoints/models/autoencoder/word2vec/best.pt
