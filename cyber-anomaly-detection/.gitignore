@@ -15,7 +15,7 @@ build/
 .ipynb_checkpoints/
 
 # ── Large binary artifacts (regenerable by running the notebooks) ─────────────
-# Feature matrices and label arrays
+# Feature matrices and label arrays (download via setup_data.py from HF Hub)
 *.npy
 # Fitted sklearn objects (scalers, encoders, pipelines)
 *.joblib
@@ -23,6 +23,9 @@ build/
 *.pkl
 # PyTorch checkpoints
 *.pt
+!notebooks/checkpoints/models/autoencoder/word2vec/best.pt
+!notebooks/checkpoints/models/seq/seq_ae_word2vec.pt
+!notebooks/checkpoints/models/seq/seq_hpo_best_init.pt
 # Gensim trained models (Word2Vec, FastText)
 *.model
 # Optuna SQLite study databases

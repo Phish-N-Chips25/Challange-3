@@ -28,12 +28,6 @@ _DETECTION_ROOT = Path(__file__).resolve().parent.parent / "cyber-anomaly-detect
 sys.path.insert(0, str(_DETECTION_ROOT))
 import detection_service as _ds
 
-# Ollama config — override via env vars
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL    = os.getenv("OLLAMA_MODEL",    "qwen2.5:32b")
-OLLAMA_TIMEOUT  = int(os.getenv("OLLAMA_TIMEOUT", "600"))
-
-
 app = Flask(__name__)
 app.secret_key = "neongate-dev-secret-key-change-me"
 

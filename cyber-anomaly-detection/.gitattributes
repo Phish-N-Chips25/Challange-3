@@ -1,8 +1,9 @@
 data/attack_kb/enterprise-attack.json filter=lfs diff=lfs merge=lfs -text
 data/attack_kb/entries.json filter=lfs diff=lfs merge=lfs -text
-data/attack_kb/chroma_db/** filter=lfs diff=lfs merge=lfs -text
-data/attack_kb/sigma_rules/** filter=lfs diff=lfs merge=lfs -text
 *.parquet filter=lfs diff=lfs merge=lfs -text
 *.pt filter=lfs diff=lfs merge=lfs -text
+notebooks/checkpoints/models/autoencoder/word2vec/best.pt !filter !diff !merge text
+notebooks/checkpoints/models/seq/seq_ae_word2vec.pt !filter !diff !merge text
+notebooks/checkpoints/models/seq/seq_hpo_best_init.pt !filter !diff !merge text
 *.pkl filter=lfs diff=lfs merge=lfs -text
 *.evtx filter=lfs diff=lfs merge=lfs -text
